@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  HAL voice session at login: opens an iTerm2 (or Terminal) window in the
+  project folder running the supervised voice session. It runs once per login
+  (and once when loaded); the window's launcher, not launchd, restarts Claude
+  Code. Installed by scripts/install-autostart.sh; see AUTOSTART.md.
+  @HAL_ROOT@ stands for the project folder; the install script fills it in.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>local.hal.voice-session</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@HAL_ROOT@/scripts/open-voice-window.sh</string>
+		<string>--login</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>StandardOutPath</key>
+	<string>@HAL_ROOT@/state/launchd-voice-session.log</string>
+	<key>StandardErrorPath</key>
+	<string>@HAL_ROOT@/state/launchd-voice-session.log</string>
+</dict>
+</plist>

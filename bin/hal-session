@@ -1,0 +1,22 @@
+#!/bin/bash
+# Run the HAL voice session (`bin/hal claude`) and keep it running: restart it
+# if Claude Code crashes, continue today's conversation, one session at a time.
+# See scripts/hal_session.py (`bin/hal-session --help`) and AUTOSTART.md.
+
+# Resolve the project root, following symlinks (so this can be linked onto PATH).
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  [[ "$src" == /* ]] || src="$dir/$src"
+done
+root="$(cd -P "$(dirname "$src")/.." 2>/dev/null && pwd)"
+
+# Standard library only, so any Python 3.9+ will do; prefer the project's.
+for py in "$root/.venv/bin/python" /usr/bin/python3; do
+  if [ -x "$py" ]; then
+    exec "$py" -I "$root/scripts/hal_session.py" "$@"
+  fi
+done
+echo "hal-session: no Python found (expected $root/.venv/bin/python; run $root/setup.sh)" >&2
+exit 1

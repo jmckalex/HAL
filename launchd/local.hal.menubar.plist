@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  HAL menu-bar item (menubar/HALMenu, built by menubar/build.sh). Starts at
+  login; launchd starts it again if it crashes, but not after Quit (a normal
+  exit). Installed by scripts/install-autostart.sh; see AUTOSTART.md.
+  @HAL_ROOT@ stands for the project folder; the install script fills it in.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>local.hal.menubar</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@HAL_ROOT@/menubar/HALMenu</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>StandardOutPath</key>
+	<string>@HAL_ROOT@/state/launchd-menubar.log</string>
+	<key>StandardErrorPath</key>
+	<string>@HAL_ROOT@/state/launchd-menubar.log</string>
+</dict>
+</plist>

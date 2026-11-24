@@ -1,0 +1,52 @@
+#!/bin/bash
+# HAL 9000 voice for Claude Code. Runs the `hal` Python package in the
+# project's .venv. See `hal --help`, or the README.
+#
+# `hal hook` is what Claude Code's hooks call. In that mode this script never
+# fails: it always exits 0 and sends any stray stderr to state/hal.log. Its
+# only stdout is the note for Claude that the UserPromptSubmit hook may print.
+
+# Resolve the project root, following symlinks (so bin/hal can be linked onto PATH).
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  [[ "$src" == /* ]] || src="$dir/$src"
+done
+root="$(cd -P "$(dirname "$src")/.." 2>/dev/null && pwd)"
+py="$root/.venv/bin/python"
+boot='import sys; sys.path.insert(0, sys.argv[1]); from hal.cli import main; sys.exit(main(sys.argv[2:]))'
+
+# `hal claude [args]`: start Claude Code as the voice ("master") session, under
+# the listener's pty proxy so spoken requests can be typed into it (LISTENER.md).
+# With voice_sessions "master" in config.json, only sessions started this way
+# speak. If front_desk is on, the front desk is started in the background first.
+# HAL_LISTEN=0 skips the proxy; so does a missing bin/hal-listen.
+if [ "$1" = claude ]; then
+  shift
+  if [ -x "$py" ]; then
+    ("$py" -E -P -c "$boot" "$root" desk autostart </dev/null >/dev/null 2>&1 &)
+  fi
+  if [ "${HAL_LISTEN:-1}" != 0 ] && [ -x "$root/bin/hal-listen" ]; then
+    HAL_VOICE=1 exec "$root/bin/hal-listen" pty -- claude "$@"
+  fi
+  HAL_VOICE=1 exec claude "$@"
+fi
+
+if [ "$1" = hook ]; then
+  state="${HAL_STATE_DIR:-$root/state}"
+  log="$state/hal.log"
+  mkdir -p "$state" 2>/dev/null || log=/dev/null
+  if [ ! -x "$py" ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') hook: no virtualenv at $py; run $root/setup.sh" >>"$log" 2>/dev/null
+    exit 0
+  fi
+  "$py" -E -P -c "$boot" "$root" "$@" 2>>"$log"
+  exit 0
+fi
+
+if [ ! -x "$py" ]; then
+  echo "hal: no virtualenv at $root/.venv; run $root/setup.sh first" >&2
+  exit 1
+fi
+exec "$py" -E -P -c "$boot" "$root" "$@"

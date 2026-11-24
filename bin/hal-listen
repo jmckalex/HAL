@@ -1,0 +1,65 @@
+#!/bin/bash
+# Always-listening front end for the HAL voice. See LISTENER.md, or `hal-listen --help`.
+#
+# The listener itself runs in the project's .venv-listen (sounddevice,
+# parakeet-mlx, onnxruntime), kept apart from the voice's .venv. Two entry
+# points need only the standard library and fall back to another Python:
+#
+#   hal-listen hook          Claude Code hook; does nothing outside a proxied
+#                            session, never fails, prints nothing
+#   hal-listen pty -- CMD    run CMD under the pty proxy; if the proxy can't
+#                            start for any reason, CMD runs directly
+
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  [[ "$src" == /* ]] || src="$dir/$src"
+done
+root="$(cd -P "$(dirname "$src")/.." 2>/dev/null && pwd)"
+lpy="$root/.venv-listen/bin/python"
+boot='import sys; sys.path.insert(0, sys.argv[1]); from hal.listener.cli import main; sys.exit(main(sys.argv[2:]))'
+
+light_python() {
+  for p in "$lpy" "$root/.venv/bin/python" /usr/bin/python3; do
+    if [ -x "$p" ]; then echo "$p"; return 0; fi
+  done
+  return 1
+}
+
+if [ "$1" = hook ]; then
+  [ -n "$HAL_LISTEN_PROXY" ] || exit 0   # not a session under the proxy: nothing to do
+  py="$(light_python)" || exit 0
+  state="${HAL_STATE_DIR:-$root/state}"
+  log="$state/listen.log"
+  mkdir -p "$state" 2>/dev/null || log=/dev/null
+  "$py" -I -S -c 'import sys; sys.path.insert(0, sys.argv[1]); from hal.listener.hookstate import main; main()' \
+    "$root" 2>>"$log" >/dev/null
+  exit 0
+fi
+
+if [ "$1" = pty ]; then
+  shift
+  [ "$1" = -- ] && shift
+  if [ $# -eq 0 ]; then echo "usage: hal-listen pty -- COMMAND [ARGS...]" >&2; exit 2; fi
+  py="$(light_python)" || exec "$@"
+  # If the proxy cannot even be imported, run the command directly.
+  exec "$py" -I -S -c '
+import os, sys
+sys.path.insert(0, sys.argv[1])
+try:
+    from hal.listener.ptyproxy import main
+except BaseException as exc:
+    sys.stderr.write(f"hal-listen: proxy unavailable ({exc!r}); running {sys.argv[2]} directly\n")
+    os.execvp(sys.argv[2], sys.argv[2:])
+sys.exit(main(sys.argv[2:]))' "$root" "$@"
+fi
+
+if [ ! -x "$lpy" ]; then
+  echo "hal-listen: no virtualenv at $root/.venv-listen; run $root/scripts/setup-listen.sh first" >&2
+  exit 1
+fi
+# Model downloads, if any, stay inside the project.
+export HF_HOME="${HAL_LISTEN_HF_HOME:-$root/models/hf}"
+export HF_HUB_DISABLE_TELEMETRY=1
+exec "$lpy" -E -P -c "$boot" "$root" "$@"

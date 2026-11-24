@@ -1,0 +1,13 @@
+#!/bin/bash
+# A forecast in one call, for quick spoken answers: `bin/weather [PLACE] [DAY]`.
+# See hal/weather.py (or `bin/weather --help`). Uses Open-Meteo; no key.
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  [[ "$src" == /* ]] || src="$dir/$src"
+done
+root="$(cd -P "$(dirname "$src")/.." 2>/dev/null && pwd)"
+py="$root/.venv/bin/python"
+[ -x "$py" ] || py="$(command -v python3)"
+exec "$py" -I -c 'import sys; sys.path.insert(0, sys.argv[1]); from hal.weather import main; sys.exit(main(sys.argv[2:]))' "$root" "$@"

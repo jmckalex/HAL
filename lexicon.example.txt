@@ -1,0 +1,38 @@
+# Names and terms for the listener's corrections (LISTENER.md, "Names the transcriber
+# gets wrong"). Read only by the listener, on this machine; re-read when it changes.
+# Corrections apply only to speech addressed to Claude, and each one is marked in
+# what is typed ("Clew-boss [heard as "Clue Boss"]"), so a wrong one can be caught.
+#
+#   Name                        a name or term, written as it should be typed
+#   Name | said, said           ... and how it is said, where the spelling doesn't show it
+#   heard words -> Name         an alias: what the transcriber wrote -> what was meant.
+#                               Always applied (case doesn't matter).
+#   heard words -> Name ?       only flag it: "heard words [? Name]"
+#   heard -> Claude @calling    the assistant's name, only where it is being called
+#                               ("God, what's the time?"; not "oh God" or "thank God")
+#
+# The folder names in lexicon_dirs (projects, the paper library's authors) are added
+# to these automatically.
+
+# People and terms
+#
+# Copy this file to lexicon.txt (which is not in git) and replace the examples
+# with your own names. Without lexicon.txt the listener corrects nothing.
+
+# People and terms
+Claude
+Kolodzin
+Gómez
+Isobel
+
+# Projects and tools
+TeX+           | tech plus, tex plus
+ghostscript    | ghost script
+Dynamo.js      | dynamo j s, dynamo dot j s
+
+# Aliases: mistakes the transcriber made with your speech
+culdran        -> Kolodzin
+tech plus      -> TeX+
+robbing        -> Robin ?
+god            -> Claude @calling
+todd           -> Claude @calling

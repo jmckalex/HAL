@@ -1,0 +1,27 @@
+.DS_Store
+__pycache__/
+*.pyc
+
+# The two Python environments: setup.sh and scripts/setup-listen.sh create them.
+.venv/
+.venv-listen/
+
+# Downloaded models: scripts/fetch-model.sh (the voice), scripts/setup-listen.sh
+# (Silero VAD, Parakeet). Check each model's licence before redistributing it.
+models/
+
+# Runtime state: logs, locks, sockets, cached audio.
+state/
+
+# Your own settings and notes: start from config.example.json and
+# lexicon.example.txt. CLAUDE.local.md holds personal instructions for Claude.
+config.json
+lexicon.txt
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Built from source: duplex/build.sh, menubar/build.sh.
+duplex/hal-duplex
+duplex/hal-duplex.new
+menubar/HALMenu
+menubar/HALMenu.new

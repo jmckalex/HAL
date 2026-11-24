@@ -1,0 +1,21 @@
+{
+  "max_chars": 0,
+  "overflow_message": "The rest is on your screen.",
+  "length_scale": null,
+  "speak_in_print_mode": false,
+  "voice_sessions": "master",
+  "spoken_reply": "lead",
+  "summary_min_chars": 350,
+  "acknowledge": true,
+  "front_desk": true,
+  "user_name": "",
+  "desk_block": false,
+  "listener": {
+    "follow_up_seconds": 15,
+    "end_silence": 0.8,
+    "name_only_grace": 0.7,
+    "duplex": "aec",
+    "name_only_reply": "Yes?",
+    "lexicon_dirs": []
+  }
+}
