@@ -117,6 +117,7 @@ class Voiceprint:
     embeddings: np.ndarray      # (n, 256), one per enrolment sentence, unit length
     created: str
     updated: str
+    name: str | None = None     # someone enrolled by name; None for the owner
 
     @property
     def vector(self) -> np.ndarray:
@@ -146,7 +147,8 @@ def load(path: Path | None = None) -> Voiceprint | None:
         emb = np.asarray(data["embeddings"], dtype=np.float32)
         if emb.ndim != 2 or len(emb) == 0:
             return None
-        return Voiceprint(str(data.get("model", "")), emb, str(data.get("created", "")), str(data.get("updated", "")))
+        return Voiceprint(str(data.get("model", "")), emb, str(data.get("created", "")), str(data.get("updated", "")),
+                          valid_name(data.get("name", "")) if data.get("name") else None)
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
@@ -155,6 +157,7 @@ def save(vp: Voiceprint, path: Path | None = None) -> Path:
     path = path or voiceprint_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {"model": vp.model, "created": vp.created, "updated": vp.updated,
+            **({"name": vp.name} if vp.name else {}),
             "embeddings": [[round(float(x), 6) for x in e] for e in vp.embeddings]}
     tmp = path.with_suffix(".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -239,54 +242,165 @@ def combined(vp: Voiceprint, learned: Learned | None) -> np.ndarray:
     return (v / np.linalg.norm(v)).astype(np.float32)
 
 
+# ---------------------------------------------------------------- other people
+
+# Others can be enrolled by name (`hal-listen enrol --name Robin`), each with
+# their own voiceprint and learned file in state/listen/voices/. Each
+# utterance goes to whoever it matches best; the typed request then says who
+# spoke ("[spoken 11:29; by Robin]"). The owner (voiceprint.json) is never named.
+
+_NAME = re.compile(r"^[A-Za-z][A-Za-z .'-]{0,39}$")
+_RESERVED = {"you", "the user", "user", "owner", "me", "an unrecognised voice", "unknown"}
+
+
+def voices_dir() -> Path:
+    return settings.listen_dir() / "voices"
+
+
+def valid_name(name: str) -> str | None:
+    """The name as it will be shown, or None if it can't be used."""
+    name = " ".join(str(name or "").split())
+    if not _NAME.match(name) or name.lower() in _RESERVED:
+        return None
+    return name
+
+
+def slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "voice"
+
+
+def person_files(name: str | None, base: Path | None = None) -> tuple[Path, Path]:
+    """(voiceprint, learned) files: the owner's for None, else the named person's."""
+    if name is None:
+        return (base / "voiceprint.json", base / "voiceprint-learned.json") if base else (voiceprint_file(), learned_file())
+    d = (base / "voices") if base else voices_dir()
+    return d / f"{slug(name)}.json", d / f"{slug(name)}-learned.json"
+
+
+def enrolled_names(base: Path | None = None) -> list[str]:
+    """The names of the others enrolled, as stored in their files."""
+    d = (base / "voices") if base else voices_dir()
+    names = []
+    for f in sorted(d.glob("*.json")) if d.is_dir() else []:
+        if f.name.endswith("-learned.json"):
+            continue
+        try:
+            name = valid_name(json.loads(f.read_text(encoding="utf-8")).get("name", ""))
+        except (OSError, ValueError, AttributeError):
+            name = None
+        if name and slug(name) == f.stem:
+            names.append(name)
+    return names
+
+
 # ---------------------------------------------------------------- the check
 
 @dataclass
 class Verdict:
-    score: float
-    match: bool         # at or above voice_threshold
+    score: float        # the best match's score (the owner's when only the owner is enrolled)
+    match: bool         # someone enrolled scored at or above voice_threshold
     reliable: bool      # enough speech (voice_min_seconds) to trust a mismatch
     embedding: np.ndarray | None = field(default=None, repr=False, compare=False)
+    who: str | None = None          # the other person it matched; None: the owner (or nobody)
+    unsure: bool = False            # the runner-up also matched, within voice_margin
+    runner_up: str | None = None    # their name ("the user" for the owner)
 
     def describe(self) -> str:
-        if self.match:
-            return "you"
-        return "another voice" if self.reliable else "unclear (too short to judge)"
+        if not self.match:
+            return "another voice" if self.reliable else "unclear (too short to judge)"
+        name = self.who or "you"
+        if self.unsure:
+            other = "you" if self.runner_up == "the user" else self.runner_up
+            return f"{name}, or perhaps {other}"
+        return name
+
+    def mark(self, enforce: bool) -> str:
+        """Who spoke, for the typed label ("" for the owner, and for nobody unless enforcing)."""
+        if not self.match:
+            return "an unrecognised voice" if enforce else ""
+        if self.unsure:
+            return f"{self.who}?" if self.who else f"the user or {self.runner_up}?"
+        return self.who or ""
+
+
+def combine_marks(marks: list[str]) -> str:
+    """One label for a turn whose fragments may come from different people."""
+    names = []
+    for m in marks:
+        m = m or "the user"
+        if m not in names:
+            names.append(m)
+    if names in ([], ["the user"]):
+        return ""
+    return " and ".join(names)
+
+
+@dataclass
+class Person:
+    name: str | None            # None: the owner
+    voiceprint: Voiceprint
+    learned: Learned | None
+    vector: np.ndarray
+    learned_path: Path
 
 
 class VoiceCheck:
     """callable(audio, speech_seconds) -> Verdict, or None when there is no
-    voiceprint for the configured model or no model. The voiceprint (and what
-    was learned) is reread when its file changes, so enrolling takes effect
-    without a restart. learn() adds a request of yours (voice_learn)."""
+    voiceprint of the owner or no model. Each utterance is scored against the
+    owner and everyone enrolled by name; files are reread when they change, so
+    enrolling takes effect without a restart. learn() adds a request to the
+    voiceprint of whoever said it (voice_learn)."""
 
     def __init__(self, cfg: dict, embedder=None, path: Path | None = None, log=lambda msg: None,
                  learned_path: Path | None = None, today=lambda: time.strftime("%Y-%m-%d")):
         self.cfg = cfg
+        self.base = path.parent if path else None       # tests: everything beside the given file
         self.path = path or voiceprint_file()
         self.learned_path = learned_path or (self.path.with_name("voiceprint-learned.json") if path else learned_file())
         self.log = log
         self.today = today
         self._embedder = embedder
         self._embedder_failed = False
-        self._mtimes: tuple | None = None
-        self.voiceprint: Voiceprint | None = None
-        self.learned: Learned | None = None
-        self.vector: np.ndarray | None = None
+        self._stamp: tuple | None = None
+        self.people: list[Person] = []
+
+    @property
+    def voiceprint(self) -> Voiceprint | None:
+        return self.people[0].voiceprint if self.people and self.people[0].name is None else None
+
+    @property
+    def vector(self) -> np.ndarray | None:
+        return self.people[0].vector if self.voiceprint is not None else None
+
+    def _files(self) -> list[tuple[str | None, Path, Path]]:
+        files = [(None, self.path, self.learned_path)]
+        for name in enrolled_names(self.base):
+            files.append((name, *person_files(name, self.base)))
+        return files
 
     def _refresh(self) -> None:
-        mtimes = []
-        for p in (self.path, self.learned_path):
-            try:
-                mtimes.append(p.stat().st_mtime)
-            except OSError:
-                mtimes.append(None)
-        mtimes = tuple(mtimes)
-        if mtimes != self._mtimes:
-            self._mtimes = mtimes
-            self.voiceprint = load(self.path) if mtimes[0] is not None else None
-            self.learned = load_learned(self.learned_path) if mtimes[1] is not None else None
-            self.vector = combined(self.voiceprint, self.learned) if self.voiceprint is not None else None
+        files = self._files()
+        stamp = []
+        for name, vp_path, learned_path in files:
+            for f in (vp_path, learned_path):
+                try:
+                    stamp.append((str(f), f.stat().st_mtime))
+                except OSError:
+                    stamp.append((str(f), None))
+        stamp = tuple(stamp)
+        if stamp == self._stamp:
+            return
+        self._stamp = stamp
+        people = []
+        for name, vp_path, learned_path in files:
+            vp = load(vp_path)
+            if vp is None:
+                continue
+            learned = load_learned(learned_path)
+            people.append(Person(name, vp, learned, combined(vp, learned), learned_path))
+        owner = [p for p in people if p.name is None]
+        dim = owner[0].voiceprint.embeddings.shape[1:] if owner else None
+        self.people = owner + [p for p in people if p.name is not None and p.voiceprint.embeddings.shape[1:] == dim]
 
     def embedder(self):
         if self._embedder is None and not self._embedder_failed:
@@ -310,19 +424,33 @@ class VoiceCheck:
         emb = emb_fn(audio)
         if emb is None or emb.shape != self.voiceprint.embeddings.shape[1:]:
             return None
-        score = float(np.dot(self.vector, emb))
-        return Verdict(score, score >= self.cfg["voice_threshold"], speech_seconds >= self.cfg["voice_min_seconds"],
-                       embedding=emb)
+        scored = sorted(((float(np.dot(p.vector, emb)), i) for i, p in enumerate(self.people)), reverse=True)
+        best, i = scored[0]
+        threshold = self.cfg["voice_threshold"]
+        match = best >= threshold
+        who = self.people[i].name if match else None
+        unsure, runner_up = False, None
+        if match and len(scored) > 1:
+            second, j = scored[1]
+            if second >= threshold and best - second < self.cfg["voice_margin"]:
+                unsure, runner_up = True, self.people[j].name or "the user"
+        return Verdict(best, match, speech_seconds >= self.cfg["voice_min_seconds"], embedding=emb, who=who,
+                       unsure=unsure, runner_up=runner_up)
 
     def learn(self, verdict: Verdict | None, speech_seconds: float) -> bool:
-        """Add a request's embedding to what was learned, if it is clearly yours
-        (voice_learn_threshold, voice_learn_min_seconds) and today's quota
-        (voice_learn_per_day) isn't used up. True if it was added."""
+        """Add a request's embedding to the voiceprint of whoever said it, if that
+        is clear (matched without doubt, voice_learn_threshold,
+        voice_learn_min_seconds) and today's quota (voice_learn_per_day) isn't
+        used up. True if it was added."""
         cfg = self.cfg
-        if (not cfg.get("voice_learn") or verdict is None or verdict.embedding is None or self.voiceprint is None
+        if (not cfg.get("voice_learn") or verdict is None or verdict.embedding is None or not verdict.match
+                or verdict.unsure or self.voiceprint is None
                 or verdict.score < cfg["voice_learn_threshold"] or speech_seconds < cfg["voice_learn_min_seconds"]):
             return False
-        learned = load_learned(self.learned_path)
+        person = next((p for p in self.people if p.name == verdict.who), None)
+        if person is None:
+            return False
+        learned = load_learned(person.learned_path)
         if learned is not None and learned.embeddings.shape[1:] != verdict.embedding.shape:
             learned = None   # made with another model: start again
         today = self.today()
@@ -336,7 +464,7 @@ class VoiceCheck:
                               learned.scores + [verdict.score])
         keep = max(1, int(cfg["voice_learn_max"]))
         learned = Learned(learned.embeddings[-keep:], learned.days[-keep:], learned.scores[-keep:])
-        save_learned(learned, self.learned_path)
+        save_learned(learned, person.learned_path)
         return True
 
 
@@ -402,9 +530,10 @@ SENTENCES = [
 ]
 
 
-def new_voiceprint(model: str, embeddings: list[np.ndarray], old: Voiceprint | None = None) -> Voiceprint:
+def new_voiceprint(model: str, embeddings: list[np.ndarray], old: Voiceprint | None = None,
+                   name: str | None = None) -> Voiceprint:
     now = time.strftime("%Y-%m-%d %H:%M")
     emb = np.stack(embeddings).astype(np.float32)
     if old is not None and old.model == model:
-        return Voiceprint(model, np.concatenate([old.embeddings, emb]), old.created, now)
-    return Voiceprint(model, emb, now, now)
+        return Voiceprint(model, np.concatenate([old.embeddings, emb]), old.created, now, name)
+    return Voiceprint(model, emb, now, now, name)

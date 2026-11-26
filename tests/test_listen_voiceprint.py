@@ -199,6 +199,67 @@ class LearningTest(unittest.TestCase):
         self.assertAlmostEqual(self.verdict().score, 0.0, 5)
 
 
+class PeopleTest(unittest.TestCase):
+    """Others enrolled by name: best match, doubt between two, learning for the right person."""
+
+    def setUp(self):
+        self.tmp = make_tmp("hal-vm-")
+        self.addCleanup(rmtree, self.tmp)
+        self.path = self.tmp / "voiceprint.json"
+        voiceprint.save(voiceprint.new_voiceprint("m", [unit(1, 0, 0)] * 4), self.path)
+        robin, _ = voiceprint.person_files("Robin", self.tmp)
+        voiceprint.save(voiceprint.new_voiceprint("m", [unit(0, 1, 0)] * 4, name="Robin"), robin)
+        self.next = unit(1, 0, 0)
+        self.check = VoiceCheck(dict(CFG, voice_threshold=0.5, voice_margin=0.05),
+                                embedder=lambda audio: self.next, path=self.path)
+
+    def verdict(self, seconds=3.0):
+        return self.check(np.zeros(RATE, np.float32), seconds)
+
+    def test_names(self):
+        self.assertEqual(voiceprint.valid_name("  Robin   Smith "), "Robin Smith")
+        self.assertEqual(voiceprint.valid_name("O'Neill-Hart"), "O'Neill-Hart")
+        for bad in ("", "you", "The User", "Robin]", "x" * 41, "../etc", "7up"):
+            self.assertIsNone(voiceprint.valid_name(bad), bad)
+        self.assertEqual(voiceprint.slug("Robin Smith"), "robin-smith")
+        self.assertEqual(voiceprint.enrolled_names(self.tmp), ["Robin"])
+
+    def test_best_match_wins(self):
+        v = self.verdict()
+        self.assertEqual((v.who, v.match, v.unsure, v.mark(True), v.describe()), (None, True, False, "", "you"))
+        self.next = unit(0.1, 1, 0)
+        v = self.verdict()
+        self.assertEqual((v.who, v.unsure, v.mark(False), v.describe()), ("Robin", False, "Robin", "Robin"))
+        self.next = unit(0, 0, 1)
+        v = self.verdict()
+        self.assertEqual((v.match, v.who, v.mark(False), v.mark(True)), (False, None, "", "an unrecognised voice"))
+
+    def test_too_close_to_call(self):
+        self.next = unit(1, 1.02, 0)                           # Robin by a hair
+        v = self.verdict()
+        self.assertEqual((v.who, v.unsure, v.runner_up, v.mark(True)), ("Robin", True, "the user", "Robin?"))
+        self.assertEqual(v.describe(), "Robin, or perhaps you")
+        self.next = unit(1.02, 1, 0)                           # the user by a hair
+        self.assertEqual(self.verdict().mark(True), "the user or Robin?")
+        self.assertFalse(self.check.learn(self.verdict(), 5.0))  # doubt: nobody learns from it
+
+    def test_learning_goes_to_whoever_spoke(self):
+        self.next = unit(0.1, 1, 0)
+        self.assertTrue(self.check.learn(self.verdict(), 3.0))
+        _, robin_learned = voiceprint.person_files("Robin", self.tmp)
+        self.assertEqual(len(voiceprint.load_learned(robin_learned).embeddings), 1)
+        self.assertIsNone(voiceprint.load_learned(self.tmp / "voiceprint-learned.json"))
+
+    def test_others_alone_do_not_start_the_check(self):
+        voiceprint.forget(self.path)
+        self.assertIsNone(self.verdict())
+
+    def test_combined_marks(self):
+        self.assertEqual(voiceprint.combine_marks(["", ""]), "")
+        self.assertEqual(voiceprint.combine_marks(["Robin", "Robin"]), "Robin")
+        self.assertEqual(voiceprint.combine_marks(["Robin", "", "Sam"]), "Robin and the user and Sam")
+
+
 class ReportTest(unittest.TestCase):
     def test_scores_from_the_log(self):
         lines = [

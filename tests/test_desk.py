@@ -433,6 +433,14 @@ class DeskAnswerTest(unittest.TestCase):
         from hal import desk
         cls.desk = desk
 
+    def test_a_guest_is_not_greeted_as_the_user(self):
+        w = self.desk._with_speaker
+        self.assertEqual(w("Hello Claude.", None), "Hello Claude.")
+        self.assertEqual(w("Hello Claude.", "Robin"),
+                         "(Said by Robin, not by the user: if you use a name, use Robin.) Hello Claude.")
+        for doubtful in ("Robin?", "the user or Robin?", "Robin and the user", "an unrecognised voice"):
+            self.assertTrue(w("Hi.", doubtful).startswith("(The speaker may not be the user: address no one"))
+
     def test_parse(self):
         parse = self.desk.parse
         self.assertEqual(parse("REPLY: Good morning."), ("social", "Good morning."))

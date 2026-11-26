@@ -132,6 +132,19 @@ class LabelTest(unittest.TestCase):
         self.assertEqual(inner.count('"'), 2)
         self.assertLess(len(lab), 140)
 
+    def test_label_says_who_when_not_the_user(self):
+        when = time.mktime((2026, 11, 26, 11, 29, 0, 0, 0, -1))
+        self.assertEqual(spoken.label(when, speaker="Robin"), "[spoken 11:29; by Robin]")
+        both = spoken.label(when, "Stop there.", speaker="Robin?")
+        self.assertEqual(both, '[spoken 11:29; by Robin?; interrupted the voice during "Stop there."]')
+        self.assertEqual(spoken.speaker(both + " Claude, wait."), "Robin?")
+        self.assertEqual(spoken.speaker("[spoken 11:29; by Robin and the user] Claude, go."), "Robin and the user")
+        self.assertIsNone(spoken.speaker("[spoken 11:29] Claude, go."))
+        self.assertIsNone(spoken.speaker('[spoken 11:29; interrupted the voice during "by now"] Claude, go.'))
+        self.assertIsNone(spoken.speaker("Typed: [spoken 11:29; by Robin] hello"))
+        self.assertEqual(spoken.plain("[spoken 11:29; by Robin] Claude, hello."), "Claude, hello.")
+        self.assertEqual(spoken.label(when, speaker="R]ob;in"), "[spoken 11:29; by Rob,in]")   # no way out of the label
+
     def test_plain_removes_the_label_and_every_mark(self):
         p = ('[spoken 21:14; interrupted the voice during "It argues…"] Claude, ask Clew-boss [heard as "Clue Boss"] '
              'to add a lamprey [?], and [pause 12s] then Culdran [? Kolodzin].')

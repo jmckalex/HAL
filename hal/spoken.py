@@ -8,6 +8,9 @@ model is told"):
     [spoken 21:14] Claude, ask Clew-boss [heard as "Clue Boss"] to add a lamprey [?] to the manual.
 
     [spoken HH:MM]                  spoken, starting at this local time
+    [spoken HH:MM; by Robin]        spoken by someone else enrolled in the voice
+                                    check ("by Robin?": probably; "by an
+                                    unrecognised voice"; "by Robin and the user")
     [spoken HH:MM; interrupted the voice during "…"]
                                     and it cut off the voice, which was saying
                                     that sentence
@@ -48,13 +51,30 @@ _ANY_MARK = re.compile(
 _QUOTE_MAX = 90
 
 
-def label(when: float | None = None, interrupted: str = "") -> str:
+def label(when: float | None = None, interrupted: str = "", speaker: str = "") -> str:
     """The label for a request spoken at `when` (time.time(); now if None). With
-    `interrupted`, the sentence the voice was saying when this speech cut it off."""
+    `interrupted`, the sentence the voice was saying when this speech cut it off;
+    with `speaker`, who said it when it wasn't the user (the voice check)."""
     stamp = time.strftime("%H:%M", time.localtime(time.time() if when is None else when))
+    parts = [f"spoken {stamp}"]
+    speaker = " ".join(str(speaker or "").replace("[", "").replace("]", "").replace(";", ",").split())
+    if speaker:
+        parts.append(f"by {speaker}")
     if interrupted:
-        return f"[spoken {stamp}; interrupted the voice during {quote(interrupted)}]"
-    return f"[spoken {stamp}]"
+        parts.append(f"interrupted the voice during {quote(interrupted)}")
+    return f"[{'; '.join(parts)}]"
+
+
+_SPEAKER = re.compile(r";\s*by ([^;\[\]\n]+?)\s*(?:;|\])")
+
+
+def speaker(prompt: str | None) -> str | None:
+    """Who said a spoken request, from its label, when it wasn't the user (or None)."""
+    m = _LABEL_AT_START.match(prompt or "")
+    if not m:
+        return None
+    s = _SPEAKER.search(m.group(0))
+    return s.group(1) if s else None
 
 
 def quote(text: str, limit: int = _QUOTE_MAX) -> str:

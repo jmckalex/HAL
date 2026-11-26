@@ -479,10 +479,14 @@ class Listener:
         self.counts.utterances += 1
         voice = self._check_voice(u)
         enforce = voice is not None and self.cfg.get("voice_check") == "enforce"
-        if enforce and not voice.match and voice.reliable:
+        guest_ignored = (enforce and voice.match and voice.who is not None and not voice.unsure
+                         and self.cfg.get("guest_requests") == "ignore")
+        if enforce and ((not voice.match and voice.reliable) or guest_ignored):
             # Another voice: ignored before it is even transcribed, and it ends no window.
             self.counts.other_voice += 1
-            logs.voice(voice.score, u.speech_seconds, "another voice: ignored unheard")
+            logs.voice(voice.score, u.speech_seconds,
+                       f"{voice.who}: ignored unheard (guest_requests)" if guest_ignored
+                       else "another voice: ignored unheard")
             self.console(f"ignored {u.speech_seconds:.1f}s of speech in another voice (voice {voice.score:.2f})")
             self._event("other_voice", score=round(voice.score, 3), speech=u.speech_seconds, speech_end=u.speech_end)
             self._chain_audio, self._chain_start, self._chain_words, u.audio = [], None, [], None
@@ -490,8 +494,9 @@ class Listener:
             if self._voice_paused_at is not None:
                 self._resume_voice("another voice")
             return
-        # Too short to judge, and not like you: only the name counts, as for speech heard over the voice.
+        # Too short to judge, and not like anyone enrolled: only the name counts, as for speech heard over the voice.
         unsure = enforce and not voice.match
+        speaker = voice.mark(enforce) if voice is not None else ""
         started = time.perf_counter()
         audio = u.audio
         text, asr_words = self._transcribe(audio)
@@ -560,7 +565,7 @@ class Listener:
             self.counts.fragments += 1
             out = self.turns.add(d.text, how=d.how, speech_start=speech_start, speech_end=u.speech_end,
                                  speech_seconds=d.speech_seconds, duration=d.duration, audio=parts, words=heard,
-                                 interrupted=cut)
+                                 interrupted=cut, speaker=speaker)
             self._event("fragment", text=d.text, how=d.how, speech=d.speech_seconds, asr=asr_seconds,
                         speech_end=u.speech_end, verdict=out.turn.verdict if out.turn else "", why=out.why)
             self._turn_outcome(out)
@@ -569,7 +574,7 @@ class Listener:
                     speech_end=u.speech_end)
         if d.action == "submit":
             typed = self._typed(d.text, heard=heard or [], fragments=[(speech_start, u.speech_end)],
-                                speech_start=speech_start, interrupted=cut)
+                                speech_start=speech_start, interrupted=cut, speaker=speaker)
             self._submit(typed.text, u.speech_end)
         elif d.action == "name_only":
             if semantic and not pending and opens_with_name(text):
@@ -584,7 +589,7 @@ class Listener:
             self._pause()
 
     def _typed(self, text: str, *, heard: list, fragments: list, speech_start: float,
-               interrupted: Interrupted | None) -> annotate.Annotated:
+               interrupted: Interrupted | None, speaker: str = "") -> annotate.Annotated:
         """The request as it is typed: labelled and marked (annotate.py)."""
         when = time.time() - max(0.0, self.clock() - speech_start)
         sentence = ""
@@ -593,11 +598,11 @@ class Listener:
             sentence = (now if now is not None and now.play_id == interrupted.play_id else interrupted).reached
         try:
             typed = annotate.build(text, self.cfg, heard=heard, fragments=fragments, when=when,
-                                   interrupted=sentence, lex=self.lexicon)
+                                   interrupted=sentence, lex=self.lexicon, speaker=speaker)
         except Exception as exc:  # never lose a request to its marks
             logs.log(f"could not mark the request ({exc!r}); typing it with the label alone")
             clean = " ".join(spoken_label.sanitize(text).split())
-            typed = annotate.Annotated(f"{spoken_label.label(when)} {clean}"
+            typed = annotate.Annotated(f"{spoken_label.label(when, speaker=speaker)} {clean}"
                                        if self.cfg.get("spoken_label", True) else clean, clean)
         self.counts.corrected += len(typed.corrections)
         self.counts.flagged += len(typed.flags)
@@ -626,9 +631,12 @@ class Listener:
             self.console(f"turn: {note} ({out.why})")
         elif out.action == "send":
             span = t.speech_end - t.fragments[0].speech_start if t and t.fragments else 0.0
+            from .voiceprint import combine_marks
+
             typed = self._typed(out.text, heard=self.turns.heard_words(t),
                                 fragments=[(f.speech_start, f.speech_end) for f in t.fragments],
-                                speech_start=t.fragments[0].speech_start, interrupted=t.interrupted)
+                                speech_start=t.fragments[0].speech_start, interrupted=t.interrupted,
+                                speaker=combine_marks([f.speaker for f in t.fragments]))
             logs.log(f"turn of {len(t.fragments)} fragment(s) over {span:.1f}s, {t.how}, sent ({out.why}): "
                      f"{typed.text!r}")
             self.console(f'turn sent ({out.why}): "{typed.text}"')

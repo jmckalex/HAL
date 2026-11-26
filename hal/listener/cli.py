@@ -396,12 +396,30 @@ def _voice_summary(cfg: dict) -> str:
     extra = f" + {len(learned.embeddings)} learned from use" if learned is not None else ""
     if not cfg["voice_learn"]:
         extra += " (not learning)"
+    others = voiceprint.enrolled_names()
+    if others:
+        extra += f"; also enrolled: {', '.join(others)}"
+        if cfg["guest_requests"] == "ignore":
+            extra += " (their requests ignored)"
     return (f"{cfg['voice_check']}: {what}; threshold {cfg['voice_threshold']:g}; "
             f"voiceprint of {len(vp.embeddings)} sentences ({vp.updated}){extra}")
 
 
+def _person(args):
+    """(name or None for the owner, voiceprint file, learned file), or None after an error message."""
+    from . import voiceprint
+
+    if not getattr(args, "name", None):
+        return None, *voiceprint.person_files(None)
+    name = voiceprint.valid_name(args.name)
+    if name is None:
+        print(f"hal-listen: {args.name!r} can't be used as a name (letters, spaces, . ' - ; up to 40)", file=sys.stderr)
+        return None
+    return name, *voiceprint.person_files(name)
+
+
 def _enrol(args) -> int:
-    """Record you reading sentences and keep their embeddings as your voiceprint."""
+    """Record you (or, with --name, someone else) reading sentences and keep their embeddings as a voiceprint."""
     from . import voiceprint
     from .audio import decode_file
 
@@ -410,8 +428,17 @@ def _enrol(args) -> int:
     if not path.exists():
         print(f"hal-listen enrol: no model at {path}; run scripts/fetch-voice-model.sh", file=sys.stderr)
         return 1
+    who = _person(args)
+    if who is None:
+        return 1
+    name, vp_path, _ = who
+    if name is not None:
+        if voiceprint.load() is None:
+            print("hal-listen enrol: enrol yourself first (without --name)", file=sys.stderr)
+            return 1
+        print(f"Enrolling {name}. A voiceprint is biometric data: enrol someone only with their agreement.")
     embed = voiceprint.Embedder(path)
-    old = voiceprint.load() if args.add else None
+    old = voiceprint.load(vp_path) if args.add else None
     if args.add and old is None:
         print("no voiceprint yet: enrolling afresh")
     if args.file:
@@ -428,9 +455,10 @@ def _enrol(args) -> int:
     if len(embeddings) < (1 if old is not None else args.minimum):
         print(f"hal-listen enrol: only {len(embeddings)} usable sentence(s); nothing saved", file=sys.stderr)
         return 1
-    vp = voiceprint.new_voiceprint(embed.name, embeddings, old)
-    saved = voiceprint.save(vp)
-    print(f"voiceprint: {len(vp.embeddings)} sentences, saved to {saved} (readable by you only; no audio kept)")
+    vp = voiceprint.new_voiceprint(embed.name, embeddings, old, name=name)
+    saved = voiceprint.save(vp, vp_path)
+    print(f"voiceprint{f' of {name}' if name else ''}: {len(vp.embeddings)} sentences, saved to {saved} "
+          f"(readable by you only; no audio kept)")
     scores = vp.self_scores()
     if scores:
         import numpy as np
@@ -502,43 +530,50 @@ def _voiceprint(args) -> int:
     from .audio import decode_file
 
     cfg = settings.load()
+    who = _person(args)
+    if who is None:
+        return 1
+    name, vp_path, learned_path = who
+    whose = f"{name}'s voiceprint" if name else "voiceprint"
     if args.action == "forget":
-        gone = voiceprint.forget()
-        voiceprint.forget_learned()
-        print("voiceprint: deleted, with what was learned" if gone else "voiceprint: there was none")
+        gone = voiceprint.forget(vp_path)
+        voiceprint.forget_learned(learned_path)
+        if name is None and gone:
+            others = voiceprint.enrolled_names()
+            if others:
+                print(f"note: {', '.join(others)} stay enrolled; the check needs your voiceprint to run at all")
+        print(f"{whose}: deleted, with what was learned" if gone else f"{whose}: there was none")
         return 0
     if args.action == "forget-learned":
-        print("voiceprint: what was learned from use is deleted; the enrolment stays"
-              if voiceprint.forget_learned() else "voiceprint: nothing learned from use yet")
+        print(f"{whose}: what was learned from use is deleted; the enrolment stays"
+              if voiceprint.forget_learned(learned_path) else f"{whose}: nothing learned from use yet")
         return 0
     if args.action == "report":
         return _voice_report(cfg)
-    vp = voiceprint.load()
+    vp = voiceprint.load(vp_path)
     if vp is None:
-        print("voiceprint: none (hal-listen enrol makes one)")
+        print(f"{whose}: none (hal-listen enrol{f' --name {name!r}' if name else ''} makes one)")
         return 1 if args.action == "score" else 0
     if args.action == "score":
-        embed = voiceprint.Embedder(voiceprint.model_path(cfg))
+        check = voiceprint.VoiceCheck(cfg)
         for f in args.files:
-            audio = decode_file(f)
-            e = embed(audio)
-            if e is None:
-                print(f"{f}: too short")
-                continue
-            score = vp.score(e)
-            print(f"{f}: {score:.2f} ({'you' if score >= cfg['voice_threshold'] else 'another voice'})")
+            v = check(decode_file(f), 99.0)
+            print(f"{f}: too short" if v is None else f"{f}: {v.score:.2f} ({v.describe()})")
         return 0
     scores = vp.self_scores()
-    print(f"voiceprint: {len(vp.embeddings)} sentences, made {vp.created}, last added to {vp.updated}; "
+    print(f"{whose}: {len(vp.embeddings)} sentences, made {vp.created}, last added to {vp.updated}; "
           f"model {vp.model}")
     if scores:
         print(f"consistency: lowest {min(scores):.2f}, median {sorted(scores)[len(scores) // 2]:.2f}")
-    learned = voiceprint.load_learned()
+    learned = voiceprint.load_learned(learned_path)
     if learned is not None:
         days = sorted({d for d in learned.days if d})
         w = voiceprint.LEARNED_WEIGHT * min(1.0, len(learned.embeddings) / len(vp.embeddings))
-        print(f"learned:  {len(learned.embeddings)} requests of yours"
+        print(f"learned:  {len(learned.embeddings)} requests{'' if name else ' of yours'}"
               f"{f' from {days[0]} to {days[-1]}' if days else ''}; weight {w:.0%} of the voiceprint")
+    if name is None:
+        others = voiceprint.enrolled_names()
+        print(f"others:   {', '.join(others) if others else 'none enrolled (hal-listen enrol --name NAME)'}")
     print(f"voice check: {_voice_summary(cfg)}")
     return 0
 
@@ -738,12 +773,14 @@ def main(argv: list[str] | None = None) -> int:
     enrol = sub.add_parser("enrol", help="record your voice reading sentences, for the voice check")
     enrol.add_argument("--count", type=int, default=20, help="how many sentences to read (default 20)")
     enrol.add_argument("--add", action="store_true", help="add to the voiceprint instead of replacing it")
+    enrol.add_argument("--name", help="enrol someone else, by this name (with their agreement)")
     enrol.add_argument("--device", help="input device (index or name substring)")
     enrol.add_argument("--file", nargs="+", help="enrol from audio files instead of the microphone")
     enrol.add_argument("--minimum", type=int, default=5, help=argparse.SUPPRESS)
     vpp = sub.add_parser("voiceprint", help="show, test or delete your voiceprint")
     vpp.add_argument("action", nargs="?", default="status", choices=["status", "score", "report", "forget", "forget-learned"])
-    vpp.add_argument("files", nargs="*", help="with score: audio files to score against the voiceprint")
+    vpp.add_argument("files", nargs="*", help="with score: audio files to score against the voiceprints")
+    vpp.add_argument("--name", help="someone enrolled by name, instead of you")
     args = parser.parse_args(argv)
 
     if getattr(args, "device", None) is not None and str(args.device).isdigit():

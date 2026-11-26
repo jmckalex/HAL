@@ -112,6 +112,16 @@ def socket_path(state_dir: Path | str | None = None) -> str:
 # The model's instructions and answers
 # ---------------------------------------------------------------------------
 
+def _with_speaker(text: str, speaker: str | None) -> str:
+    """A remark the voice check says someone else made, with a note so the desk
+    doesn't greet them by the user's name."""
+    if not speaker or not text.strip():
+        return text
+    if speaker.endswith("?") or " and " in speaker or speaker == "an unrecognised voice":
+        return f"(The speaker may not be the user: address no one by name.) {text}"
+    return f"(Said by {speaker}, not by the user: if you use a name, use {speaker}.) {text}"
+
+
 def desk_prompt(user_name: str = "") -> str:
     if user_name:
         name = f"The user is {user_name}. Use their name when greeting them or saying goodbye; otherwise leave it out."
@@ -708,6 +718,7 @@ class Desk:
         self.last_activity = received
         self.counts["prompts"] += 1
         text = spoken.plain(req.get("text")) if isinstance(req.get("text"), str) else ""
+        text = _with_speaker(text, spoken.speaker(req.get("text")) if isinstance(req.get("text"), str) else None)
         token = req.get("token") if isinstance(req.get("token"), str) else ""
         wait = bool(req.get("wait"))
         acknowledge = req.get("ack", True) is not False

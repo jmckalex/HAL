@@ -400,7 +400,7 @@ def _render(toks: list[_Tok]) -> tuple[str, str]:
 
 def build(text: str, cfg: dict, *, heard: list[HeardWord] | None = None,
           fragments: list[tuple[float, float]] | None = None, when: float | None = None,
-          interrupted: str = "", lex=None) -> Annotated:
+          interrupted: str = "", lex=None, speaker: str = "") -> Annotated:
     """The request as typed (see the module docstring). With spoken_label off: the text as it is."""
     text = " ".join(spoken.sanitize(text).split())
     if not cfg.get("spoken_label", True):
@@ -421,6 +421,6 @@ def build(text: str, cfg: dict, *, heard: list[HeardWord] | None = None,
     body, plain = _render(toks)
     note = interrupted if cfg.get("interruption_note", True) else ""
     out.interrupted = bool(note)
-    out.text = f"{spoken.label(when, note)} {body}".strip()
+    out.text = f"{spoken.label(when, note, speaker)} {body}".strip()
     out.plain = plain
     return out

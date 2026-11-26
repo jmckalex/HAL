@@ -299,6 +299,38 @@ class PrivacyTest(unittest.TestCase):
         self.assertEqual(voices.learned, [0.8])                          # not the unaddressed one, nor the unsure one
         self.assertIn("voice: learned from this request (0.80)", (rig.tmp / "state" / "listen.log").read_text())
 
+    def test_a_guest_is_named_in_the_label(self):
+        texts = ["Claude, what's the weather tomorrow?", "Claude, open my thesis."]
+        rig = Rig(utterances(1.5, 1.5), texts, voices=self.voices(Verdict(0.8, True, True, who="Robin"),
+                                                                   Verdict(0.8, True, True)),
+                  voice_check="log", turn_taking="silence")
+        self.addCleanup(rig.close)
+        rig.lst.run()
+        self.assertEqual(rig.lst.injector.typed, texts)
+        self.assertRegex(rig.lst.injector.raw[0], r"^\[spoken \d\d:\d\d; by Robin\] Claude, what's")
+        self.assertRegex(rig.lst.injector.raw[1], r"^\[spoken \d\d:\d\d\] Claude, open")
+
+    def test_a_turn_says_everyone_who_spoke_in_it(self):
+        texts = ["Claude, could you look at the draft of my paper and", "the second chapter."]
+        rig = Rig(utterances(2.0, 1.5), texts, voices=self.voices(Verdict(0.8, True, True),
+                                                                   Verdict(0.7, True, True, who="Robin")),
+                  voice_check="enforce")
+        self.addCleanup(rig.close)
+        rig.lst.run()
+        self.assertEqual(len(rig.lst.injector.raw), 1)
+        self.assertIn("; by the user and Robin] Claude, could you look", rig.lst.injector.raw[0])
+
+    def test_guest_requests_can_be_ignored(self):
+        texts = ["Claude, open my thesis."]
+        rig = Rig(utterances(1.5, 1.5), texts, voices=self.voices(Verdict(0.8, True, True, who="Robin"),
+                                                                   Verdict(0.8, True, True)),
+                  voice_check="enforce", guest_requests="ignore", turn_taking="silence")
+        self.addCleanup(rig.close)
+        rig.lst.run()
+        self.assertEqual(rig.lst.injector.typed, texts)
+        self.assertEqual(rig.lst.asr.calls, 1)
+        self.assertIn("Robin: ignored unheard (guest_requests)", (rig.tmp / "state" / "listen.log").read_text())
+
     def test_logs_api_cannot_take_text(self):
         import inspect
 

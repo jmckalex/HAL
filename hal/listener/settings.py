@@ -112,6 +112,12 @@ DEFAULTS: dict = {
     # voice_learn_per_day a day; the newest voice_learn_max kept). It is blended
     # with the enrolment, which keeps at least half the weight.
     "voice_learn": True,
+    # Others enrolled by name (`hal-listen enrol --name Robin`): an utterance goes
+    # to whoever it matches best, and the typed label says who ("by Robin"). When
+    # the runner-up is within voice_margin, the label says so ("by Robin?").
+    # guest_requests "ignore" (with voice_check "enforce") drops their requests.
+    "voice_margin": 0.05,
+    "guest_requests": "type",
     "voice_learn_threshold": 0.65,
     "voice_learn_min_seconds": 2.0,
     "voice_learn_per_day": 40,
@@ -272,7 +278,8 @@ _FLOATS = ("armed_seconds", "name_only_grace", "follow_up_seconds", "hold_second
            "turn_end_silence", "turn_max_wait", "turn_unclear_wait", "turn_judge_timeout", "turn_cue_after",
            "barge_in_vad", "barge_in_speech", "barge_in_within", "barge_in_echo_margin", "barge_in_echo_ratio",
            "resume_seconds", "doubt_threshold", "pause_mark_seconds", "voice_threshold", "voice_min_seconds",
-           "voice_learn_threshold", "voice_learn_min_seconds", "voice_learn_per_day", "voice_learn_max")
+           "voice_learn_threshold", "voice_learn_min_seconds", "voice_learn_per_day", "voice_learn_max",
+           "voice_margin")
 _SIGNED_FLOATS = ("barge_in_min_db",)
 _WORD_LISTS = ("names", "vocative_names", "lead_words", "name_only_words", "stop_phrases",
                "turn_send_phrases", "turn_cancel_phrases", "barge_in_stop_phrases", "barge_in_resume_phrases")
@@ -284,7 +291,8 @@ _BOOLS = ("autostart", "require_session_state", "turn_judge", "turn_retranscribe
           "doubt_marks", "pause_marks", "interruption_note", "draft_ignore_wordless",
           "pause_when_locked", "voice_learn")
 _CHOICES = {"turn_taking": ("semantic", "silence"), "turn_cue": ("none", "sound", "words"),
-            "duplex": ("half", "aec"), "voice_check": ("off", "log", "enforce"), "aec_ducking": ("min", "default", "mid", "max")}
+            "duplex": ("half", "aec"), "voice_check": ("off", "log", "enforce"),
+            "guest_requests": ("type", "ignore"), "aec_ducking": ("min", "default", "mid", "max")}
 
 
 def _raw_block(path: Path) -> dict:
