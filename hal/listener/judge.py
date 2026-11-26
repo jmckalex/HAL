@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import socket
+import subprocess
 import threading
 import time
 
@@ -94,12 +95,37 @@ def ask(text: str, timeout: float, path: str | None = None) -> tuple[str | None,
     return None, str(reply.get("why") or f"answer {kind!r}")
 
 
+_WAKE_EVERY = 15.0
+_last_wake = -1e9
+
+
+def wake_desk() -> bool:
+    """Start the front desk in the background if it is enabled and not running
+    (`hal desk autostart`, which does nothing otherwise). At most every 15 s."""
+    global _last_wake
+    now = time.monotonic()
+    if now - _last_wake < _WAKE_EVERY:
+        return False
+    _last_wake = now
+    try:
+        subprocess.Popen([str(settings.ROOT / "bin" / "hal"), "desk", "autostart"], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return True
+    except OSError:
+        return False
+
+
 class DeskJudge:
     """callable(text) -> Handle, answered in the background."""
 
-    def __init__(self, timeout: float, path_fn=socket_path):
+    def __init__(self, timeout: float, path_fn=socket_path, on_absent=None):
         self.timeout = timeout
         self.path_fn = path_fn
+        self.on_absent = on_absent     # called when the desk isn't running (to start it for next time)
+
+    def wake(self) -> None:
+        if self.on_absent is not None:
+            self.on_absent()
 
     def __call__(self, text: str) -> Handle:
         handle = Handle()
@@ -108,6 +134,8 @@ class DeskJudge:
         def run():
             try:
                 kind, why = ask(text, self.timeout, self.path_fn())
+                if why == "the front desk is not running":
+                    self.wake()
             except Exception as exc:  # never let a thread die silently with the handle open
                 kind, why = None, repr(exc)
             handle._finish(kind, why, started)

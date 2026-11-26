@@ -57,6 +57,8 @@ _HANDLED = (signal.SIGWINCH, signal.SIGCHLD, signal.SIGCONT) + _FORWARD
 _MAX_TEXT = 4000
 _MAX_REQUEST = 64 * 1024
 _RELEASE_GAP = 0.05   # after Enter, before keys pressed meanwhile are passed on
+_CLEAR_LINE = b"\x15"  # Ctrl-U: clears a stray draft from Claude Code's prompt box
+_CLEAR_GAP = 0.05     # after Ctrl-U, before the text
 
 
 def proxy_file() -> Path:
@@ -461,6 +463,11 @@ class Proxy:
         if inj and now >= inj["due"]:
             if self.to_child:  # the previous piece is still being written; keep the pieces apart
                 inj["due"] = now + 0.02
+            elif inj["phase"] == "clear":
+                self.to_child += inj.pop("text")
+                self._to_child()
+                inj["phase"] = "text"
+                inj["due"] = now + inj["delay"]
             elif inj["phase"] == "text":
                 # Enter on its own: Claude Code takes a burst that contains Enter as a paste.
                 if inj["submit"]:
@@ -578,7 +585,8 @@ class Proxy:
                 "ok": True, "pid": os.getpid(), "child_pid": self.child_pid,
                 "child_alive": self.child_status is None, "can_type": ok, "reason": reason, "detail": detail,
                 "keyboard_idle": round(now - self.keyboard.last_key, 1) if self.keyboard.last_key else None,
-                "draft": self.keyboard.draft, "turn": st.get("turn"), "started": st.get("started"),
+                "draft": self.keyboard.draft, "draft_negligible": self.keyboard.negligible(self._settings()),
+                "turn": st.get("turn"), "started": st.get("started"),
                 "dialogs": [session.describe(d) for d in session.open_dialogs(st, self.keyboard, now, self._settings())],
             })
         elif op == "type":
@@ -605,11 +613,24 @@ class Proxy:
         if not ok:
             self._reply(c, {"ok": False, "reason": reason, "detail": detail})
             return
+        cfg = self._settings()
+        submit = req.get("submit", True) is not False
+        delay = cfg["submit_delay"] if submit else 0.0
+        self.injecting = {"id": ident, "conn": c, "chars": len(text), "submit": submit}
+        if self.keyboard.draft and self.keyboard.negligible(cfg):
+            # Stray keys in the prompt box (see session.negligible): clear the line
+            # first, apart from the text, so the request isn't typed onto them.
+            logs.log(f"cleared {self.keyboard.draft} stray characters from the prompt box before typing a request",
+                     source="pty")
+            self.keyboard.clear()
+            self.to_child += _CLEAR_LINE
+            self._to_child()
+            self.injecting.update(phase="clear", text=text.encode("utf-8"), delay=delay,
+                                  due=time.monotonic() + _CLEAR_GAP)
+            return
         self.to_child += text.encode("utf-8")
         self._to_child()
-        submit = req.get("submit", True) is not False
-        self.injecting = {"id": ident, "conn": c, "chars": len(text), "submit": submit, "phase": "text",
-                          "due": time.monotonic() + (self._settings()["submit_delay"] if submit else 0.0)}
+        self.injecting.update(phase="text", due=time.monotonic() + delay)
 
     def _finish_injection(self) -> None:
         """Release the keys the user pressed meanwhile, and answer."""

@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import functools
 import hashlib
 import json
 import os
@@ -222,40 +223,96 @@ _SS3 = re.compile(rb"\x1bO[\x20-\x7e]")
 _PASTE_START, _PASTE_END = b"\x1b[200~", b"\x1b[201~"
 
 
+_DICTIONARY = "/usr/share/dict/words"
+_WORDLESS_MAX = 16   # a longer draft is kept even when no word in it is recognised
+
+
+@functools.lru_cache(maxsize=1)
+def _dictionary() -> str:
+    """The system word list, lower-cased, one word per line ("" if there is none)."""
+    try:
+        with open(_DICTIONARY, encoding="utf-8", errors="replace") as f:
+            return "\n" + f.read().lower() + "\n"
+    except OSError:
+        return ""
+
+
+def has_word(text: str) -> bool | None:
+    """Whether text contains a dictionary word of two letters or more (None: no dictionary)."""
+    words = _dictionary()
+    if not words:
+        return None
+    return any(f"\n{w}\n" in words for w in re.findall(r"[^\W\d_]{2,}", text.lower()))
+
+
+def negligible(text: str, cfg: dict) -> bool:
+    """Whether typed text is not worth keeping: blank, no more than
+    draft_ignore_chars characters, or (draft_ignore_wordless) a short run that
+    contains no word, such as "jk" or "asdf". Text of more than one line is kept."""
+    if "\n" in text:
+        return False
+    chars = len("".join(text.split()))
+    if chars <= cfg["draft_ignore_chars"]:
+        return True
+    return bool(cfg["draft_ignore_wordless"]) and chars <= _WORDLESS_MAX and has_word(text) is False
+
+
 class Keyboard:
     """What the person at the real keyboard has done, as far as it matters here.
 
-    draft is a rough count of characters typed since the last Enter (or Ctrl-C,
-    Ctrl-U): positive means text may be sitting unsent in the prompt box.
-    Arrow keys, history recall and Ctrl-W aren't modelled; see LISTENER.md."""
+    text is a rough model of what was typed since the last Enter (or Ctrl-C,
+    Ctrl-U): non-empty means text may be sitting unsent in the prompt box, and
+    draft is its length. Backspace, Ctrl-W and Alt-Backspace delete from its end.
+    Arrow keys and history recall aren't modelled; see LISTENER.md."""
 
     def __init__(self):
         self.last_key = 0.0
         self.last_draft_key = 0.0
-        self.draft = 0
+        self.text: list[str] = []
+        self.pasted = False          # the draft holds pasted text: always kept
         self.enters: collections.deque = collections.deque(maxlen=64)    # times of Enter
         self.escapes: collections.deque = collections.deque(maxlen=64)   # times of Esc or Ctrl-C
         self._paste = False
 
-    def _typed(self, n: int, now: float) -> None:
-        if n > 0:
-            self.draft += n
+    @property
+    def draft(self) -> int:
+        return len(self.text)
+
+    def clear(self) -> None:
+        self.text.clear()
+        self.pasted = False
+
+    def negligible(self, cfg: dict) -> bool:
+        """Whether the draft may be cleared to type a request (see negligible())."""
+        return not self.pasted and negligible("".join(self.text), cfg)
+
+    def _typed(self, chars: str, now: float) -> None:
+        if chars:
+            self.text.extend(chars)
             self.last_draft_key = now
 
     def _key(self, name: str, now: float) -> None:
         if name == "enter":
             self.enters.append(now)
-            self.draft = 0
+            self.clear()
         elif name == "newline":
-            self._typed(1, now)
+            self._typed("\n", now)
         elif name in ("esc", "ctrl-c"):
             self.escapes.append(now)
             if name == "ctrl-c":
-                self.draft = 0
+                self.clear()
         elif name == "ctrl-u":
-            self.draft = 0
+            self.clear()
         elif name == "backspace":
-            self.draft = max(0, self.draft - 1)
+            if self.text:
+                self.text.pop()
+        elif name == "word":         # Ctrl-W or Alt-Backspace: the word before the cursor
+            while self.text and self.text[-1].isspace():
+                self.text.pop()
+            while self.text and not self.text[-1].isspace():
+                self.text.pop()
+        if not self.text:
+            self.pasted = False
 
     def feed(self, data: bytes, now: float | None = None) -> None:
         now = time.time() if now is None else now
@@ -270,7 +327,11 @@ class Keyboard:
             if self._paste:
                 end = data.find(_PASTE_END, i)
                 chunk = data[i:] if end < 0 else data[i:end]
-                self._typed(sum(1 for b in chunk if b >= 0x20 and not 0x80 <= b <= 0xBF), now)
+                pasted = chunk.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
+                pasted = "".join(ch for ch in pasted if ch >= " " or ch in "\n\t")
+                if pasted:
+                    self.pasted = True
+                    self._typed(pasted, now)
                 if end < 0:
                     return
                 self._paste = False
@@ -295,6 +356,10 @@ class Keyboard:
                     self._key("newline", now)
                     i += 2
                     continue
+                if i + 1 < n and data[i + 1] in (0x7F, 0x08):   # Alt+Backspace: delete a word
+                    self._key("word", now)
+                    i += 2
+                    continue
                 if i + 1 >= n:
                     self._key("esc", now)
                 i += 2   # Alt+key
@@ -305,10 +370,20 @@ class Keyboard:
                 self._key("ctrl-c", now)
             elif b == 0x15:
                 self._key("ctrl-u", now)
+            elif b == 0x17:
+                self._key("word", now)
             elif b in (0x7F, 0x08):
                 self._key("backspace", now)
-            elif b >= 0x20 and not 0x80 <= b <= 0xBF:
-                self._typed(1, now)
+            elif b >= 0x80:
+                if b >= 0xC0:   # a UTF-8 lead byte and the continuation bytes that follow it
+                    end = i + 1
+                    while end < n and end - i < 4 and 0x80 <= data[end] <= 0xBF:
+                        end += 1
+                    self._typed(data[i:end].decode("utf-8", "replace"), now)
+                    i = end
+                    continue
+            elif b >= 0x20:
+                self._typed(chr(b), now)
             i += 1
 
     def _csi(self, params: bytes, final: bytes, now: float) -> None:
@@ -325,19 +400,21 @@ class Keyboard:
             mods, code = nums[1], nums[2]
         else:
             return
-        shift, ctrl = bool((mods - 1) & 1), bool((mods - 1) & 4)
+        shift, alt, ctrl = bool((mods - 1) & 1), bool((mods - 1) & 2), bool((mods - 1) & 4)
         if code == 13:
             self._key("newline" if (shift or mods > 1) else "enter", now)
         elif code == 27:
             self._key("esc", now)
         elif code in (127, 8):
-            self._key("backspace", now)
+            self._key("word" if alt else "backspace", now)
         elif ctrl and code == 99:
             self._key("ctrl-c", now)
         elif ctrl and code == 117:
             self._key("ctrl-u", now)
-        elif 32 <= code and not ctrl:
-            self._typed(1, now)
+        elif ctrl and code == 119:
+            self._key("word", now)
+        elif 32 <= code <= 0x10FFFF and not (ctrl or alt) and not 0xE000 <= code <= 0xF8FF:  # not a functional key
+            self._typed(chr(code), now)
 
 
 # ---------------------------------------------------------------- the verdict
@@ -382,8 +459,9 @@ def verdict(state: dict | None, kb: Keyboard | None, now: float, cfg: dict) -> t
     if dialogs:
         return False, "dialog", describe(dialogs[0])
     if kb is not None:
-        if kb.draft > 0 and now - kb.last_draft_key < cfg["draft_hold_seconds"]:
-            return False, "draft", f"about {kb.draft} unsent characters in the prompt box"
+        if kb.draft > 0 and now - kb.last_draft_key < cfg["draft_hold_seconds"] and not kb.negligible(cfg):
+            return False, "draft", (f"about {kb.draft} unsent characters in the prompt box, "
+                                    f"last typed {now - kb.last_draft_key:.0f}s ago")
         if now - kb.last_key < cfg["keyboard_quiet"]:
             return False, "keyboard", f"a key was pressed {now - kb.last_key:.1f}s ago"
     return True, "ok", ""

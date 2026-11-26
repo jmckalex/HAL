@@ -4,7 +4,7 @@ Puts its terminal in raw mode, like Claude Code, and reports on stdout:
     READY rows=R cols=C        at start
     WINCH rows=R cols=C        on each window-size change
     KEYS <hex>                 each chunk read from the terminal (STANDIN_HEX=1)
-    LINE <json>                each line submitted with Enter (\r)
+    LINE <json>                each line submitted with Enter (\r); Ctrl-U clears the line
 Each submitted line is also appended, with a timestamp, to $STANDIN_OUT (if set),
 and the command $STANDIN_ON_LINE (if set) is run with the line as an extra argument; the
 end-to-end test uses that to fire the HAL hooks the way Claude Code would.
@@ -69,6 +69,9 @@ def main():
             if show_hex:
                 say(f"KEYS {data.hex()}")
             for b in data:
+                if b == 0x15:      # Ctrl-U clears the line, as in Claude Code's prompt box
+                    line = b""
+                    continue
                 if b != 0x0D:
                     line += bytes([b])
                     continue

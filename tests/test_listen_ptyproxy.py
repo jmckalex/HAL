@@ -210,6 +210,22 @@ class InjectionTest(ProxyCase):
         t.send("exit 0\r")
         t.wait_exit()
 
+    def test_stray_keys_are_cleared_before_typing(self):
+        t = self.start(proxy_argv(*standin_argv()))
+        t.wait_for(r"READY")
+        c, info = self.client()
+        self.session_started(info)
+        t.send("jk ")                                   # stray keys, no word: not a draft worth keeping
+        time.sleep(0.4)
+        self.assertTrue(c.status()["draft_negligible"])
+        self.assertTrue(c.type("Claude, hello.", "g")["ok"])
+        t.wait_for(r'LINE "Claude, hello."')
+        self.assertIn("KEYS 15", t.text)                # Ctrl-U, written on its own before the text
+        self.assertEqual(self.lines(), ["Claude, hello."])
+        self.assertEqual(c.status()["draft"], 0)
+        t.send("exit 0\r")
+        t.wait_exit()
+
     def test_keys_pressed_while_typing_wait_until_after_enter(self):
         write_config(self.tmp, dict(FAST, submit_delay=1.0))
         t = self.start(proxy_argv(*standin_argv()))

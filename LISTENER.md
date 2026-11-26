@@ -106,7 +106,7 @@ With `turn_taking` `"semantic"` (the default), a pause yields a fragment, not a 
 | --- | --- |
 | finished | Sent once 1.2 s of silence has followed it (`turn_end_silence`). Speech that resumes before then still joins it. |
 | unfinished | Held. Sent as it stands after 60 s of silence (`turn_max_wait`). |
-| unclear | The front desk's warm Claude Haiku judges it (`turn_judge`, normally within a second). If the desk is off, not running or slower than 2.5 s (`turn_judge_timeout`), the turn is sent after 3 s of silence (`turn_unclear_wait`). |
+| unclear | The front desk's warm Claude Haiku judges it (`turn_judge`, normally within a second). If the desk is off, not running or slower than 2.5 s (`turn_judge_timeout`), the turn is sent after 3 s of silence (`turn_unclear_wait`). A desk that isn't running is started then for the next turn, and whenever listening resumes. |
 
 The rules come first. They are cheap, and they decide only what they can decide reliably:
 
@@ -253,7 +253,7 @@ tmux isn't installed here, and the proxy needs no extra software.
 
 - **No session state yet.** The session's hooks haven't reported (`SessionStart`). This also covers the workspace-trust dialog at startup, which comes before it. Requests are held.
 - **A dialog is open.** HAL says it needs you at the keyboard, and requests are held. The dialog kinds are listed below.
-- **Unsent text in the prompt box.** You typed since your last Enter, Ctrl-C or Ctrl-U. HAL says so, and requests are held. A draft untouched for 60 s is taken as abandoned.
+- **Unsent text in the prompt box.** You typed since your last Enter, Ctrl-C or Ctrl-U. HAL says so, and requests are held. A draft untouched for 60 s is taken as abandoned. Stray keys don't count: a draft that is blank, no more than 3 characters (spaces aside), or up to 16 characters with no dictionary word in it ("jk", "asdf") is cleared with Ctrl-U and the request typed. Pasted text, and text of more than one line, always count. The log says when a draft was last typed, and when stray keys were cleared.
 - **A key was pressed within the last second.** Requests are held quietly and retried.
 
 A turn in progress is not a reason to refuse: Claude Code queues what is typed.
@@ -323,6 +323,7 @@ All optional, in a `"listener"` object in `config.json`. A missing key, or one o
 | `hold_seconds` | `120` | A held request is dropped after this. |
 | `keyboard_quiet` | `1.0` | No typing for this long after a keystroke. |
 | `draft_hold_seconds` | `60` | Unsent text blocks typing for this long after the last key. |
+| `draft_ignore_chars` / `draft_ignore_wordless` | `3` / `true` | A draft this short, or (when true) a short one with no dictionary word, is stray keys: cleared, not waited for. |
 | `submit_delay` | `0.15` | Pause between the text and Enter. |
 | `dialog_max_age` | `1800` | Older dialogs are ignored. |
 | `require_session_state` | `true` | Don't type until the hooks have reported. |
@@ -428,7 +429,7 @@ Testing aids for the background listener: `HAL_LISTEN_FILE` makes it hear an aud
 - **Half-duplex by default.** With `duplex` `"half"` you can't interrupt HAL by voice, and anything said while HAL speaks is lost. With `"aec"` you can (above), except when it falls back: while another app captures audio, while voice processing is unavailable for the current devices, or while HAL's voice is being prepared and the helper isn't running.
 - **Interrupting is tuned on synthetic speech.** Real double-talk (you speaking over HAL through the laptop speakers) hasn't been measured, and nor have AirPods or wired headphones. A loud room or music may pause the voice, which then resumes once the words show it was nothing. A quiet voice (about −40 dBFS at the microphone) may not interrupt it. If you repeat the voice's own words back to it, that counts as echo.
 - **A sandboxed command's network-request prompt fires no `PermissionRequest`.** Only the `permission_prompt` notification marks it, about 6 s late, so a request spoken in those first seconds could be typed into it.
-- **The draft heuristic only counts keys.** Text recalled with the up arrow, or inserted by `/voice`, isn't seen. Ctrl-W isn't modelled, so a draft deleted that way blocks typing until Enter, Ctrl-C or Ctrl-U, or for 60 s.
+- **The draft is modelled from keys.** Text recalled with the up arrow, or inserted by `/voice`, isn't seen, and editing after moving the cursor is taken as typing at the end. Backspace, Ctrl-W and Alt-Backspace delete from the end. Stray keys are judged against `/usr/share/dict/words`, so a short draft of names or terms the dictionary lacks ("jmacs") counts as stray and is cleared.
 - **Claude Code's vim mode isn't supported.** In NORMAL mode the typed characters would be commands.
 - **Tested only on synthetic speech.** Parakeet does well on the natural macOS voices and worse on robotic ones. Real rooms (distance, noise, other voices, music) haven't been measured.
 - **The proxy has been run around the real `claude`, but not logged in.** The tests used a throwaway config, so typing into the real prompt box hasn't been seen.

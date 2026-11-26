@@ -107,6 +107,13 @@ DEFAULTS: dict = {
     # A draft (keys typed since the last Enter) stops typing for this long
     # after the last keystroke; after that it is assumed abandoned.
     "draft_hold_seconds": 60.0,
+    # A draft that doesn't count, so the prompt box is cleared (Ctrl-U) and the
+    # request typed: blank, or no more than draft_ignore_chars characters
+    # (spaces aside), or with draft_ignore_wordless a short run of up to 16
+    # characters with no dictionary word in it ("jk", "asdf"). Pasted text and
+    # text of more than one line always count.
+    "draft_ignore_chars": 3,
+    "draft_ignore_wordless": True,
     # Pause between typing the text and pressing Enter. Claude Code treats a
     # burst that already contains Enter as a paste, so Enter is sent apart.
     "submit_delay": 0.15,
@@ -236,7 +243,7 @@ DEFAULTS: dict = {
 }
 
 _FLOATS = ("armed_seconds", "name_only_grace", "follow_up_seconds", "hold_seconds", "keyboard_quiet",
-           "draft_hold_seconds", "submit_delay", "dialog_max_age", "vad_threshold", "vad_neg_threshold",
+           "draft_hold_seconds", "draft_ignore_chars", "submit_delay", "dialog_max_age", "vad_threshold", "vad_neg_threshold",
            "end_silence", "pre_roll", "post_roll", "min_speech", "max_utterance", "echo_tail",
            "turn_end_silence", "turn_max_wait", "turn_unclear_wait", "turn_judge_timeout", "turn_cue_after",
            "barge_in_vad", "barge_in_speech", "barge_in_within", "barge_in_echo_margin", "barge_in_echo_ratio",
@@ -249,7 +256,7 @@ _STRINGS = ("name_only_reply", "paused_reply", "dialog_notice", "draft_notice", 
             "asr_model", "vad_model", "turn_cancel_reply", "turn_cue_sound", "turn_cue_words", "lexicon_file")
 _BOOLS = ("autostart", "require_session_state", "turn_judge", "turn_retranscribe", "during_turn",
           "aec_agc", "aec_on_headphones", "aec_yield_to_other_input", "barge_in", "spoken_label", "lexicon",
-          "doubt_marks", "pause_marks", "interruption_note")
+          "doubt_marks", "pause_marks", "interruption_note", "draft_ignore_wordless")
 _CHOICES = {"turn_taking": ("semantic", "silence"), "turn_cue": ("none", "sound", "words"),
             "duplex": ("half", "aec"), "aec_ducking": ("min", "default", "mid", "max")}
 

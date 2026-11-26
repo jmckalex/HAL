@@ -185,6 +185,51 @@ class KeyboardTest(unittest.TestCase):
         self.assertEqual(kb.draft, 4)     # one per character, not per byte
         self.assertTrue(verdict(st, kb, 1004.0 + CFG["draft_hold_seconds"] + 1, CFG)[0])  # abandoned
 
+    def test_stray_keys_do_not_hold(self):
+        st = run(STARTED)
+        for stray in (b"   ", b"j", b"jk", b"asdf", b"Cna yuo"):
+            kb = Keyboard()
+            kb.feed(stray, 1000.0)
+            ok, reason, _ = verdict(st, kb, 1005, CFG)
+            self.assertTrue(ok, (stray, reason))
+            self.assertTrue(kb.negligible(CFG))
+        for kept in (b"fix the docs", b"ok then", b"line one\x1b\rasdf"):
+            kb = Keyboard()
+            kb.feed(kept, 1000.0)
+            self.assertEqual(verdict(st, kb, 1005, CFG)[1], "draft", kept)
+        kb = Keyboard()
+        kb.feed(b"\x1b[200~xq\x1b[201~", 1000.0)  # pasted: always kept
+        self.assertEqual(verdict(st, kb, 1005, CFG)[1], "draft")
+
+    def test_stray_rules_can_be_turned_off(self):
+        st = run(STARTED)
+        cfg = dict(CFG, draft_ignore_chars=0, draft_ignore_wordless=False)
+        kb = Keyboard()
+        kb.feed(b"  ", 1000.0)
+        self.assertTrue(verdict(st, kb, 1005, cfg)[0])        # blank still never counts
+        kb.feed(b"jk", 1000.0)
+        self.assertEqual(verdict(st, kb, 1005, cfg)[1], "draft")
+
+    def test_draft_detail_says_when_it_was_typed(self):
+        kb = Keyboard()
+        kb.feed(b"fix the docs", 1000.0)
+        self.assertEqual(verdict(run(STARTED), kb, 1012, CFG)[2],
+                         "about 12 unsent characters in the prompt box, last typed 12s ago")
+
+    def test_word_delete(self):
+        for key in (b"\x17", b"\x1b\x7f", b"\x1b[119;5u", b"\x1b[127;3u"):
+            kb = Keyboard()
+            kb.feed(b"fix the  ", 1.0)
+            kb.feed(key, 2.0)
+            self.assertEqual("".join(kb.text), "fix ", key)
+
+    def test_paste_mark_ends_with_the_draft(self):
+        kb = Keyboard()
+        kb.feed(b"\x1b[200~ab\x1b[201~", 1.0)
+        self.assertFalse(kb.negligible(CFG))
+        kb.feed(b"\x7f\x7fj", 2.0)
+        self.assertTrue(kb.negligible(CFG))
+
     def test_ctrl_c_and_ctrl_u_clear_draft(self):
         for key in (b"\x03", b"\x15"):
             kb = Keyboard()

@@ -159,6 +159,7 @@ class Listener:
         self.cfg = cfg
         self.source, self.vad, self.asr, self.gate = source, vad, asr, gate
         self.injector, self.decider, self.voice = injector, decider, voice
+        self.judge = judge
         self.console = console
         self.clock = clock
         self.proxy_pid = proxy_pid
@@ -237,6 +238,8 @@ class Listener:
             self.paused = paused
             logs.log("paused" if paused else "resumed")
             self.console("paused" if paused else "resumed")
+            if not paused and hasattr(self.judge, "wake"):
+                self.judge.wake()   # the front desk may have retired while listening was paused
             if paused and self.turns is not None and self.turns.pending:
                 self.turns.discard("listening paused")
                 self.console("a request in progress was discarded: listening paused")

@@ -137,7 +137,7 @@ def _build(args, cfg: dict, console, proxy: dict | None):
     if cfg["turn_taking"] == "semantic" and cfg["turn_judge"]:
         from . import judge
 
-        turn_judge = judge.DeskJudge(cfg["turn_judge_timeout"])
+        turn_judge = judge.DeskJudge(cfg["turn_judge_timeout"], on_absent=judge.wake_desk)
     return service.Listener(cfg, source=source, vad=vad.SileroVAD(str(vad_path)), asr=asr, gate=speaking_gate,
                             injector=inj, decider=decider.Decider(cfg), voice=voice, console=console, clock=clock,
                             proxy_pid=proxy["pid"] if proxy else None,

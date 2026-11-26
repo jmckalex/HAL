@@ -6,7 +6,7 @@ This folder holds a voice interface to Claude Code: the user speaks, and replies
 
 **The first paragraph of every reply is what the user hears.** The voice speaks the opening paragraph of each reply and nothing else (`spoken_reply: "lead"` in `config.json`). So write that paragraph to be spoken:
 
-- Answer the question in it. One to three short sentences, under about 450 characters.
+- Answer the question in it, at the length the answer needs. Often one sentence is enough, and a yes, a number or a time may need only a few words. Judge each reply; don't fill it out to two or three sentences by habit. Never more than about 450 characters.
 - Plain prose only: no markdown, lists, code, file paths or URLs in that paragraph. Say names, numbers, days and times in a way that reads aloud well.
 - It must stand alone: the listener may hear nothing else. If you need a decision, ask for it there.
 - Never start a reply with a heading, a list or a table. If the opening paragraph is not usable, a smaller model summarises the reply instead, which is slower and less accurate.
@@ -17,7 +17,8 @@ To have one reply read in full (when asked to "walk me through" something), run 
 
 **While you work, the line before a tool call is spoken too** (`hal/progress.py`). So in a turn that uses tools:
 
-- Before the first tool call, and whenever there's news, write one short plain sentence: what you are about to do, or what you just found ("Let me fetch tomorrow's forecast." "The tests pass; now the docs."). Keep it under about 160 characters, in whole sentences, with no markdown, lists or paths. A longer opening, or one that starts with a list, is not spoken.
+- Speak only when it helps the listener; use your judgement. In a turn that will take a while, one short plain sentence before the first tool call says what you are doing ("Let me fetch tomorrow's forecast."). After that, speak only for real news: a finding, a change of plan, a problem ("The tests pass; now the docs."). Before routine steps, write nothing. A quick turn may need no progress line at all.
+- Keep each line under about 160 characters, in whole sentences, with no markdown, lists or paths. A longer opening, or one that starts with a list, is not spoken.
 - Don't repeat the acknowledgement the listener already heard ("Certainly, I'll check that"). Say something new.
 - Put the answer itself in the final message, after the last tool call. Text written before a tool call is heard only as a short progress line.
 - If nothing is said for 12 seconds, a stock phrase ("Still working on it.") fills the gap at the next tool call, at most twice a turn.

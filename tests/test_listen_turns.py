@@ -626,6 +626,16 @@ class DeskJudgeTest(unittest.TestCase):
         self.assertIn("not running", h.why)
         self.assertLess(time.monotonic() - started, 0.5)
 
+    def test_absent_desk_is_woken_for_next_time(self):
+        woken = []
+        handle = DeskJudge(1.0, path_fn=lambda: self.path, on_absent=lambda: woken.append(1))("Claude, hello.")
+        self.assertTrue(handle.wait(3))
+        self.assertEqual((handle.kind, woken), (None, [1]))
+        self.desk(lambda req: (0.0, {"kind": "complete", "seconds": 0.0}))
+        handle = DeskJudge(1.0, path_fn=lambda: self.path, on_absent=lambda: woken.append(2))("Claude, hello.")
+        self.assertTrue(handle.wait(3))
+        self.assertEqual((handle.kind, woken), ("complete", [1]))   # a running desk isn't woken
+
     def test_too_slow(self):
         self.desk(lambda req: (2.0, {"kind": "complete"}))
         h = self.judged(timeout=0.5)
