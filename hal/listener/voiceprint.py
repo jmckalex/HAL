@@ -20,7 +20,7 @@ import json
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -173,6 +173,72 @@ def forget(path: Path | None = None) -> bool:
         return False
 
 
+# ---------------------------------------------------------------- learning from use
+
+# Embeddings of your own requests, added as you use the voice (voice_learn):
+# only requests scored well above the threshold, with enough speech, a few a
+# day at most, the newest voice_learn_max kept. They are blended with the
+# enrolment, which always keeps at least half the weight, so the voiceprint
+# can follow rooms, distances and days without drifting away from you.
+LEARNED_WEIGHT = 0.5
+
+
+def learned_file() -> Path:
+    return settings.listen_dir() / "voiceprint-learned.json"
+
+
+@dataclass
+class Learned:
+    embeddings: np.ndarray                         # (k, 256), unit length
+    days: list[str] = field(default_factory=list)  # the day each was added, YYYY-MM-DD
+    scores: list[float] = field(default_factory=list)
+
+
+def load_learned(path: Path | None = None) -> Learned | None:
+    path = path or learned_file()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        emb = np.asarray(data["embeddings"], dtype=np.float32)
+        if emb.ndim != 2 or len(emb) == 0:
+            return None
+        days = [str(d) for d in data.get("days", [])][: len(emb)]
+        scores = [float(x) for x in data.get("scores", [])][: len(emb)]
+        return Learned(emb, days + [""] * (len(emb) - len(days)), scores + [0.0] * (len(emb) - len(scores)))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def save_learned(learned: Learned, path: Path | None = None) -> Path:
+    path = path or learned_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {"days": learned.days, "scores": [round(x, 3) for x in learned.scores],
+            "embeddings": [[round(float(x), 6) for x in e] for e in learned.embeddings]}
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+    return path
+
+
+def forget_learned(path: Path | None = None) -> bool:
+    return forget(path or learned_file())
+
+
+def combined(vp: Voiceprint, learned: Learned | None) -> np.ndarray:
+    """The voiceprint used for scoring: the enrolment, blended with what was
+    learned. The learned part's weight grows with its size, up to LEARNED_WEIGHT
+    once there are as many learned embeddings as enrolled ones."""
+    enrolled = vp.vector
+    if learned is None or len(learned.embeddings) == 0 or learned.embeddings.shape[1:] != vp.embeddings.shape[1:]:
+        return enrolled
+    lv = learned.embeddings.mean(axis=0)
+    lv = lv / np.linalg.norm(lv)
+    w = LEARNED_WEIGHT * min(1.0, len(learned.embeddings) / len(vp.embeddings))
+    v = (1 - w) * enrolled + w * lv
+    return (v / np.linalg.norm(v)).astype(np.float32)
+
+
 # ---------------------------------------------------------------- the check
 
 @dataclass
@@ -180,6 +246,7 @@ class Verdict:
     score: float
     match: bool         # at or above voice_threshold
     reliable: bool      # enough speech (voice_min_seconds) to trust a mismatch
+    embedding: np.ndarray | None = field(default=None, repr=False, compare=False)
 
     def describe(self) -> str:
         if self.match:
@@ -189,27 +256,37 @@ class Verdict:
 
 class VoiceCheck:
     """callable(audio, speech_seconds) -> Verdict, or None when there is no
-    voiceprint for the configured model or no model. The voiceprint is reread
-    when the file changes, so enrolling takes effect without a restart."""
+    voiceprint for the configured model or no model. The voiceprint (and what
+    was learned) is reread when its file changes, so enrolling takes effect
+    without a restart. learn() adds a request of yours (voice_learn)."""
 
-    def __init__(self, cfg: dict, embedder=None, path: Path | None = None, log=lambda msg: None):
+    def __init__(self, cfg: dict, embedder=None, path: Path | None = None, log=lambda msg: None,
+                 learned_path: Path | None = None, today=lambda: time.strftime("%Y-%m-%d")):
         self.cfg = cfg
         self.path = path or voiceprint_file()
+        self.learned_path = learned_path or (self.path.with_name("voiceprint-learned.json") if path else learned_file())
         self.log = log
+        self.today = today
         self._embedder = embedder
         self._embedder_failed = False
-        self._mtime: float | None = None
+        self._mtimes: tuple | None = None
         self.voiceprint: Voiceprint | None = None
+        self.learned: Learned | None = None
+        self.vector: np.ndarray | None = None
 
     def _refresh(self) -> None:
-        try:
-            mtime = self.path.stat().st_mtime
-        except OSError:
-            self._mtime, self.voiceprint = None, None
-            return
-        if mtime != self._mtime:
-            self._mtime = mtime
-            self.voiceprint = load(self.path)
+        mtimes = []
+        for p in (self.path, self.learned_path):
+            try:
+                mtimes.append(p.stat().st_mtime)
+            except OSError:
+                mtimes.append(None)
+        mtimes = tuple(mtimes)
+        if mtimes != self._mtimes:
+            self._mtimes = mtimes
+            self.voiceprint = load(self.path) if mtimes[0] is not None else None
+            self.learned = load_learned(self.learned_path) if mtimes[1] is not None else None
+            self.vector = combined(self.voiceprint, self.learned) if self.voiceprint is not None else None
 
     def embedder(self):
         if self._embedder is None and not self._embedder_failed:
@@ -233,8 +310,34 @@ class VoiceCheck:
         emb = emb_fn(audio)
         if emb is None or emb.shape != self.voiceprint.embeddings.shape[1:]:
             return None
-        score = self.voiceprint.score(emb)
-        return Verdict(score, score >= self.cfg["voice_threshold"], speech_seconds >= self.cfg["voice_min_seconds"])
+        score = float(np.dot(self.vector, emb))
+        return Verdict(score, score >= self.cfg["voice_threshold"], speech_seconds >= self.cfg["voice_min_seconds"],
+                       embedding=emb)
+
+    def learn(self, verdict: Verdict | None, speech_seconds: float) -> bool:
+        """Add a request's embedding to what was learned, if it is clearly yours
+        (voice_learn_threshold, voice_learn_min_seconds) and today's quota
+        (voice_learn_per_day) isn't used up. True if it was added."""
+        cfg = self.cfg
+        if (not cfg.get("voice_learn") or verdict is None or verdict.embedding is None or self.voiceprint is None
+                or verdict.score < cfg["voice_learn_threshold"] or speech_seconds < cfg["voice_learn_min_seconds"]):
+            return False
+        learned = load_learned(self.learned_path)
+        if learned is not None and learned.embeddings.shape[1:] != verdict.embedding.shape:
+            learned = None   # made with another model: start again
+        today = self.today()
+        if learned is not None and sum(d == today for d in learned.days) >= cfg["voice_learn_per_day"]:
+            return False
+        emb = verdict.embedding[None].astype(np.float32)
+        if learned is None:
+            learned = Learned(emb, [today], [verdict.score])
+        else:
+            learned = Learned(np.concatenate([learned.embeddings, emb]), learned.days + [today],
+                              learned.scores + [verdict.score])
+        keep = max(1, int(cfg["voice_learn_max"]))
+        learned = Learned(learned.embeddings[-keep:], learned.days[-keep:], learned.scores[-keep:])
+        save_learned(learned, self.learned_path)
+        return True
 
 
 def speech_only(audio: np.ndarray, start: float, speech_start: float, speech_end: float) -> np.ndarray:

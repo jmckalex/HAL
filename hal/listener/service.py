@@ -122,6 +122,7 @@ class Counts:
     doubtful: int = 0            # words marked [?]
     voice_checked: int = 0       # utterances scored against the voiceprint (voice_check)
     other_voice: int = 0         # ... ignored as another voice (voice_check "enforce")
+    voice_learned: int = 0       # ... of yours added to the voiceprint (voice_learn)
 
 
 def pid_alive(pid: int) -> bool:
@@ -462,6 +463,18 @@ class Listener:
             self.counts.voice_checked += 1
         return verdict
 
+    def _learn_voice(self, verdict, speech_seconds: float) -> None:
+        """A request clearly in your voice refines the voiceprint (voice_learn)."""
+        learn = getattr(self.voice_check, "learn", None)
+        if learn is None:
+            return
+        try:
+            if learn(verdict, speech_seconds):
+                self.counts.voice_learned += 1
+                logs.log(f"voice: learned from this request ({verdict.score:.2f})")
+        except Exception as exc:  # never lose a request to learning
+            logs.log(f"voice: could not learn from this request ({exc!r})")
+
     def _utterance(self, u: Utterance) -> None:
         self.counts.utterances += 1
         voice = self._check_voice(u)
@@ -539,6 +552,8 @@ class Listener:
         if voice is not None:
             what += f", voice {voice.score:.2f} ({voice.describe()}{'; only the name counted' if unsure else ''})"
         logs.addressed(d.text, d.speech_seconds, what)
+        if voice is not None and d.action == "submit" and not overlapped and not unsure:
+            self._learn_voice(voice, u.speech_seconds)
         self.console(f'heard ({d.how}): "{d.text}" -> {"fragment" if semantic and d.action == "submit" else d.action}'
                      f"  [speech-to-text {asr_seconds * 1000:.0f} ms]")
         if d.action == "submit" and semantic:

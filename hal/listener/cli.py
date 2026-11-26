@@ -392,8 +392,12 @@ def _voice_summary(cfg: dict) -> str:
     if not voiceprint.model_path(cfg).exists():
         return f"{cfg['voice_check']}, but the model is missing (scripts/fetch-voice-model.sh)"
     what = {"log": "scores logged, nothing refused", "enforce": "other voices ignored"}[cfg["voice_check"]]
+    learned = voiceprint.load_learned()
+    extra = f" + {len(learned.embeddings)} learned from use" if learned is not None else ""
+    if not cfg["voice_learn"]:
+        extra += " (not learning)"
     return (f"{cfg['voice_check']}: {what}; threshold {cfg['voice_threshold']:g}; "
-            f"voiceprint of {len(vp.embeddings)} sentences ({vp.updated})")
+            f"voiceprint of {len(vp.embeddings)} sentences ({vp.updated}){extra}")
 
 
 def _enrol(args) -> int:
@@ -499,7 +503,13 @@ def _voiceprint(args) -> int:
 
     cfg = settings.load()
     if args.action == "forget":
-        print("voiceprint: deleted" if voiceprint.forget() else "voiceprint: there was none")
+        gone = voiceprint.forget()
+        voiceprint.forget_learned()
+        print("voiceprint: deleted, with what was learned" if gone else "voiceprint: there was none")
+        return 0
+    if args.action == "forget-learned":
+        print("voiceprint: what was learned from use is deleted; the enrolment stays"
+              if voiceprint.forget_learned() else "voiceprint: nothing learned from use yet")
         return 0
     if args.action == "report":
         return _voice_report(cfg)
@@ -523,6 +533,12 @@ def _voiceprint(args) -> int:
           f"model {vp.model}")
     if scores:
         print(f"consistency: lowest {min(scores):.2f}, median {sorted(scores)[len(scores) // 2]:.2f}")
+    learned = voiceprint.load_learned()
+    if learned is not None:
+        days = sorted({d for d in learned.days if d})
+        w = voiceprint.LEARNED_WEIGHT * min(1.0, len(learned.embeddings) / len(vp.embeddings))
+        print(f"learned:  {len(learned.embeddings)} requests of yours"
+              f"{f' from {days[0]} to {days[-1]}' if days else ''}; weight {w:.0%} of the voiceprint")
     print(f"voice check: {_voice_summary(cfg)}")
     return 0
 
@@ -726,7 +742,7 @@ def main(argv: list[str] | None = None) -> int:
     enrol.add_argument("--file", nargs="+", help="enrol from audio files instead of the microphone")
     enrol.add_argument("--minimum", type=int, default=5, help=argparse.SUPPRESS)
     vpp = sub.add_parser("voiceprint", help="show, test or delete your voiceprint")
-    vpp.add_argument("action", nargs="?", default="status", choices=["status", "score", "report", "forget"])
+    vpp.add_argument("action", nargs="?", default="status", choices=["status", "score", "report", "forget", "forget-learned"])
     vpp.add_argument("files", nargs="*", help="with score: audio files to score against the voiceprint")
     args = parser.parse_args(argv)
 

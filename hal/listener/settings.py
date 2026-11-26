@@ -106,6 +106,16 @@ DEFAULTS: dict = {
     "voice_threshold": 0.5,
     "voice_min_seconds": 1.0,
     "voice_model": "models/speaker/wespeaker_en_voxceleb_resnet34_LM.onnx",
+    # Learning from use: a request scored at least voice_learn_threshold, with
+    # voice_learn_min_seconds of speech or more, not said over the voice, adds
+    # its embedding to state/listen/voiceprint-learned.json (at most
+    # voice_learn_per_day a day; the newest voice_learn_max kept). It is blended
+    # with the enrolment, which keeps at least half the weight.
+    "voice_learn": True,
+    "voice_learn_threshold": 0.65,
+    "voice_learn_min_seconds": 2.0,
+    "voice_learn_per_day": 40,
+    "voice_learn_max": 200,
     # "Claude, stop listening" pauses; resume with `hal-listen resume`.
     "stop_phrases": ["stop listening", "pause listening", "stop listening for now", "stop listening please"],
     "paused_reply": "Very well. I will stop listening until you resume me from the keyboard.",
@@ -261,7 +271,8 @@ _FLOATS = ("armed_seconds", "name_only_grace", "follow_up_seconds", "hold_second
            "end_silence", "pre_roll", "post_roll", "min_speech", "max_utterance", "echo_tail",
            "turn_end_silence", "turn_max_wait", "turn_unclear_wait", "turn_judge_timeout", "turn_cue_after",
            "barge_in_vad", "barge_in_speech", "barge_in_within", "barge_in_echo_margin", "barge_in_echo_ratio",
-           "resume_seconds", "doubt_threshold", "pause_mark_seconds", "voice_threshold", "voice_min_seconds")
+           "resume_seconds", "doubt_threshold", "pause_mark_seconds", "voice_threshold", "voice_min_seconds",
+           "voice_learn_threshold", "voice_learn_min_seconds", "voice_learn_per_day", "voice_learn_max")
 _SIGNED_FLOATS = ("barge_in_min_db",)
 _WORD_LISTS = ("names", "vocative_names", "lead_words", "name_only_words", "stop_phrases",
                "turn_send_phrases", "turn_cancel_phrases", "barge_in_stop_phrases", "barge_in_resume_phrases")
@@ -271,7 +282,7 @@ _STRINGS = ("name_only_reply", "paused_reply", "dialog_notice", "draft_notice", 
 _BOOLS = ("autostart", "require_session_state", "turn_judge", "turn_retranscribe", "during_turn",
           "aec_agc", "aec_on_headphones", "aec_yield_to_other_input", "barge_in", "spoken_label", "lexicon",
           "doubt_marks", "pause_marks", "interruption_note", "draft_ignore_wordless",
-          "pause_when_locked")
+          "pause_when_locked", "voice_learn")
 _CHOICES = {"turn_taking": ("semantic", "silence"), "turn_cue": ("none", "sound", "words"),
             "duplex": ("half", "aec"), "voice_check": ("off", "log", "enforce"), "aec_ducking": ("min", "default", "mid", "max")}
 

@@ -277,6 +277,28 @@ class PrivacyTest(unittest.TestCase):
         rig.lst.run()
         self.assertEqual(rig.lst.injector.typed, texts)
 
+    def test_only_your_addressed_requests_are_learned(self):
+        class Voices:
+            def __init__(self, *verdicts):
+                self.queue, self.learned = list(verdicts), []
+
+            def __call__(self, audio, speech_seconds):
+                return self.queue.pop(0)
+
+            def learn(self, verdict, speech_seconds):
+                self.learned.append(round(verdict.score, 2))
+                return True
+
+        texts = ["Claude, open my thesis.", "Nice weather today.", "Claude, what's the weather tomorrow?"]
+        voices = Voices(Verdict(0.8, True, True, embedding=np.ones(2)), Verdict(0.75, True, True, embedding=np.ones(2)),
+                        Verdict(0.3, False, False, embedding=np.ones(2)))
+        rig = Rig(utterances(1.5, 1.5, 0.8), texts, voices=voices, voice_check="enforce", turn_taking="silence")
+        self.addCleanup(rig.close)
+        rig.lst.run()
+        self.assertEqual(rig.lst.injector.typed, [texts[0], texts[2]])   # the third: short, but it has the name
+        self.assertEqual(voices.learned, [0.8])                          # not the unaddressed one, nor the unsure one
+        self.assertIn("voice: learned from this request (0.80)", (rig.tmp / "state" / "listen.log").read_text())
+
     def test_logs_api_cannot_take_text(self):
         import inspect
 

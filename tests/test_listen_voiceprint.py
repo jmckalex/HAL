@@ -136,6 +136,69 @@ class VoiceCheckTest(unittest.TestCase):
         self.assertIs(voiceprint.speech_only(audio, 100.0, 101.0, 101.2), audio)   # too little: keep it all
 
 
+class LearningTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = make_tmp("hal-vl-")
+        self.addCleanup(rmtree, self.tmp)
+        self.path = self.tmp / "voiceprint.json"
+        self.learned_path = self.tmp / "voiceprint-learned.json"
+        voiceprint.save(voiceprint.new_voiceprint("m", [unit(1, 0, 0)] * 4), self.path)
+        self.day = "2026-11-26"
+        self.next = unit(1, 0.2, 0)                            # 0.98 against the enrolment
+        self.cfg = dict(CFG, voice_learn_per_day=3, voice_learn_max=5)
+        self.check = self.make(self.cfg)
+
+    def make(self, cfg):
+        return VoiceCheck(cfg, embedder=lambda audio: self.next, path=self.path, today=lambda: self.day)
+
+    def verdict(self, seconds=3.0):
+        return self.check(np.zeros(RATE, np.float32), seconds)
+
+    def learned(self):
+        return voiceprint.load_learned(self.learned_path)
+
+    def test_a_clear_request_is_learned(self):
+        self.assertTrue(self.check.learn(self.verdict(), 3.0))
+        got = self.learned()
+        self.assertEqual((len(got.embeddings), got.days), (1, [self.day]))
+        self.assertEqual(stat.S_IMODE(os.stat(self.learned_path).st_mode), 0o600)
+
+    def test_unclear_ones_are_not(self):
+        self.assertFalse(self.check.learn(self.verdict(), 1.5))          # too little speech
+        self.next = unit(1, 1.2, 0)                                      # 0.64: below voice_learn_threshold
+        self.assertFalse(self.check.learn(self.verdict(), 3.0))
+        self.next = unit(1, 0.2, 0)
+        self.assertFalse(self.make(dict(self.cfg, voice_learn=False)).learn(self.verdict(), 3.0))
+        self.assertFalse(self.check.learn(None, 3.0))
+        self.assertFalse(self.check.learn(Verdict(0.9, True, True), 3.0))   # no embedding
+        self.assertIsNone(self.learned())
+
+    def test_daily_quota_and_cap(self):
+        for _ in range(4):
+            self.check.learn(self.verdict(), 3.0)
+        self.assertEqual(len(self.learned().embeddings), 3)              # three a day
+        self.day = "2026-11-27"
+        for _ in range(3):
+            self.assertTrue(self.check.learn(self.verdict(), 3.0))
+        self.assertEqual(self.learned().days, ["2026-11-26"] * 2 + ["2026-11-27"] * 3)   # the newest five
+
+    def test_the_enrolment_keeps_at_least_half(self):
+        vp = voiceprint.load(self.path)
+        two = voiceprint.Learned(np.stack([unit(0, 1, 0)] * 2))
+        self.assertAlmostEqual(float(voiceprint.combined(vp, two)[1] / voiceprint.combined(vp, two)[0]), 1 / 3, 5)
+        for n in (4, 40):
+            v = voiceprint.combined(vp, voiceprint.Learned(np.stack([unit(0, 1, 0)] * n)))
+            self.assertTrue(np.allclose(v, unit(1, 1, 0), atol=1e-6))    # half and half at most
+
+    def test_what_was_learned_is_used_and_can_be_forgotten(self):
+        self.next = unit(0, 1, 0)
+        self.assertAlmostEqual(self.verdict().score, 0.0, 5)
+        voiceprint.save_learned(voiceprint.Learned(np.stack([unit(0, 1, 0)] * 4)), self.learned_path)
+        self.assertAlmostEqual(self.verdict().score, float(np.sqrt(0.5)), 5)
+        self.assertTrue(voiceprint.forget_learned(self.learned_path))
+        self.assertAlmostEqual(self.verdict().score, 0.0, 5)
+
+
 class ReportTest(unittest.TestCase):
     def test_scores_from_the_log(self):
         lines = [
