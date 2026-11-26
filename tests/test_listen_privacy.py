@@ -102,7 +102,7 @@ class Rig:
     audio), with stand-in parts and its state in a temporary directory."""
 
     def __init__(self, audio, texts, blocked=lambda t: False, show_ignored=False, *, make_judge=None, asr=None,
-                 session_state=None, cue_sound=None, linger=0.0, **cfg_over):
+                 session_state=None, cue_sound=None, linger=0.0, screen_locked=None, **cfg_over):
         self.tmp = make_tmp()
         self.console = []
         self._env = mock.patch.dict(os.environ, {"HAL_STATE_DIR": str(self.tmp / "state"),
@@ -114,7 +114,8 @@ class Rig:
                             asr=asr or FakeASR(texts), gate=FakeGate(blocked), injector=FakeInjector(),
                             decider=Decider(cfg), voice=FakeVoice(), console=self.console.append, clock=clock,
                             show_ignored=show_ignored, judge=make_judge(clock) if make_judge else None,
-                            session_state=session_state, cue_sound=cue_sound, linger=linger)
+                            session_state=session_state, cue_sound=cue_sound, linger=linger,
+                            screen_locked=screen_locked)
 
     def close(self):
         self._env.stop()
@@ -211,6 +212,20 @@ class PrivacyTest(unittest.TestCase):
         everything = self.files_text(rig.tmp) + json.dumps(rig.lst.events)
         for word in SECRET_WORDS:
             self.assertNotIn(word, everything + " ".join(judge.asked))
+
+    def test_nothing_heard_while_the_screen_is_locked(self):
+        # Speech at 1001.5-1003.0 and 1004.5-1006.0 on the rig's clock; the screen is locked 1000.2-1003.5.
+        holder = {}
+        texts = ["Claude, what's the weather tomorrow?"]  # the stand-in transcriber answers in order
+        rig = Rig(utterances(1.5, 1.5), texts, screen_locked=lambda: 1000.2 <= holder["rig"].clock() < 1003.5)
+        holder["rig"] = rig
+        self.addCleanup(rig.close)
+        rig.lst.run()
+        self.assertEqual(rig.lst.injector.typed, ["Claude, what's the weather tomorrow?"])
+        self.assertEqual(rig.lst.asr.calls, 1)          # the first utterance was never even transcribed
+        log = (rig.tmp / "state" / "listen.log").read_text()
+        self.assertIn("paused (screen locked)", log)
+        self.assertIn("resumed (screen unlocked)", log)
 
     def test_logs_api_cannot_take_text(self):
         import inspect

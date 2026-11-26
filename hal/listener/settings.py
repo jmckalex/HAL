@@ -92,6 +92,9 @@ DEFAULTS: dict = {
     # session's turn is busy and has not stopped since), speech needs no name:
     # it is part of the conversation, and Claude Code queues it for the model.
     "during_turn": True,
+    # Stop listening while the Mac's screen is locked (or another user has it),
+    # and start again when it is unlocked: nobody is at the keyboard then.
+    "pause_when_locked": True,
     # "Claude, stop listening" pauses; resume with `hal-listen resume`.
     "stop_phrases": ["stop listening", "pause listening", "stop listening for now", "stop listening please"],
     "paused_reply": "Very well. I will stop listening until you resume me from the keyboard.",
@@ -256,7 +259,8 @@ _STRINGS = ("name_only_reply", "paused_reply", "dialog_notice", "draft_notice", 
             "asr_model", "vad_model", "turn_cancel_reply", "turn_cue_sound", "turn_cue_words", "lexicon_file")
 _BOOLS = ("autostart", "require_session_state", "turn_judge", "turn_retranscribe", "during_turn",
           "aec_agc", "aec_on_headphones", "aec_yield_to_other_input", "barge_in", "spoken_label", "lexicon",
-          "doubt_marks", "pause_marks", "interruption_note", "draft_ignore_wordless")
+          "doubt_marks", "pause_marks", "interruption_note", "draft_ignore_wordless",
+          "pause_when_locked")
 _CHOICES = {"turn_taking": ("semantic", "silence"), "turn_cue": ("none", "sound", "words"),
             "duplex": ("half", "aec"), "aec_ducking": ("min", "default", "mid", "max")}
 

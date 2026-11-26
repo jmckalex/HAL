@@ -80,7 +80,7 @@ def _running_pid() -> int:
 
 def _build(args, cfg: dict, console, proxy: dict | None):
     """Load the models and assemble a Listener (heavy imports happen here)."""
-    from . import control, decider, gate, injector, service, vad
+    from . import control, decider, gate, injector, screen, service, vad
 
     vad_path = settings.project_path(cfg["vad_model"])
     if not vad_path.exists():
@@ -143,7 +143,9 @@ def _build(args, cfg: dict, console, proxy: dict | None):
                             proxy_pid=proxy["pid"] if proxy else None,
                             proxy_socket=proxy.get("socket") if proxy else None,
                             dry_run=args.dry_run, show_ignored=args.show_ignored,
-                            linger=getattr(args, "linger", 0.0), judge=turn_judge, lexicon=lex)
+                            linger=getattr(args, "linger", 0.0), judge=turn_judge, lexicon=lex,
+                            screen_locked=screen.locked if (cfg["pause_when_locked"] and not args.dry_run
+                                                            and not getattr(args, "file", None)) else None)
 
 
 class _FileClock:
@@ -301,7 +303,8 @@ def _status(args) -> int:  # noqa: ARG001
     paused = (settings.listen_dir() / "paused").exists()
     if pid:
         counts = info.get("counts", {})
-        print(f"listener: running (pid {pid}), {info.get('state', '?')}{' (paused)' if paused else ''}; "
+        why = " (paused)" if paused else (" (screen locked)" if info.get("screen_locked") else "")
+        print(f"listener: running (pid {pid}), {info.get('state', '?')}{why}; "
               f"source {info.get('source', '?')}; submitted {counts.get('submitted', 0)}, "
               f"ignored {counts.get('ignored', 0)}, discarded while speaking {counts.get('discarded', 0)}")
     else:

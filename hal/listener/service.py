@@ -155,11 +155,14 @@ class Listener:
                  clock=time.monotonic, proxy_pid: int | None = None, proxy_socket: str | None = None,
                  dry_run: bool = False,
                  show_ignored: bool = False, linger: float = 0.0, write_status: bool = True,
-                 judge=None, session_state=None, cue_sound=play_cue, stop_voice=stop_hal_voice, lexicon=None):
+                 judge=None, session_state=None, cue_sound=play_cue, stop_voice=stop_hal_voice, lexicon=None,
+                 screen_locked=None):
         self.cfg = cfg
         self.source, self.vad, self.asr, self.gate = source, vad, asr, gate
         self.injector, self.decider, self.voice = injector, decider, voice
         self.judge = judge
+        self.screen_locked = screen_locked   # callable -> True while the screen is locked (screen.locked)
+        self.locked = False
         self.console = console
         self.clock = clock
         self.proxy_pid = proxy_pid
@@ -233,11 +236,18 @@ class Listener:
 
     def _housekeeping(self, now: float) -> None:
         self._next_house = now + 0.5
-        paused = self._paused_flag().exists()
+        flagged = self._paused_flag().exists()
+        was_locked, self.locked = self.locked, bool(self.screen_locked is not None and self.screen_locked() is True)
+        paused = flagged or self.locked
         if paused != self.paused:
             self.paused = paused
-            logs.log("paused" if paused else "resumed")
-            self.console("paused" if paused else "resumed")
+            why = ""
+            if paused and self.locked and not flagged:
+                why = " (screen locked)"
+            elif not paused and was_locked:
+                why = " (screen unlocked)"
+            logs.log(("paused" if paused else "resumed") + why)
+            self.console(("paused" if paused else "resumed") + why)
             if not paused and hasattr(self.judge, "wake"):
                 self.judge.wake()   # the front desk may have retired while listening was paused
             if paused and self.turns is not None and self.turns.pending:
@@ -262,7 +272,8 @@ class Listener:
     def _status(self, state: str | None = None) -> None:
         if state is None:
             state = "paused" if self.paused else ("holding" if self.injector.holding else "listening")
-        info = {"pid": os.getpid(), "proxy_pid": self.proxy_pid, "state": state, "started": self.started,
+        info = {"pid": os.getpid(), "proxy_pid": self.proxy_pid, "state": state, "screen_locked": self.locked,
+                "started": self.started,
                 "updated": time.time(), "source": getattr(self.source, "name", "?"),
                 "model": getattr(self.asr, "name", "?"), "dry_run": self.dry_run,
                 "counts": self.counts.__dict__, "last_event": self.last_event,
