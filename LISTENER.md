@@ -12,11 +12,14 @@ Everything runs locally: Silero VAD finds the utterances, Parakeet (on MLX) tran
 scripts/setup-listen.sh      # .venv-listen, the two models, the listener's tests
 bin/hal-listen mic-check     # 3 s of levels from the microphone (nothing kept or transcribed)
 duplex/build.sh              # only for duplex "aec": the audio helper (swiftc, a few seconds)
+scripts/fetch-voice-model.sh # only for the voice check: the speaker model (26.5 MB)
+bin/hal-listen enrol         # ... then read 20 sentences to make your voiceprint
 ```
 
 - **`.venv-listen`** is separate from the voice's `.venv`, so installing or upgrading the listener can never break speech. It holds `parakeet-mlx`, `mlx`, `sounddevice`, `onnxruntime` and `numpy`, pinned in `requirements-listen.txt`.
 - **`models/silero_vad.onnx`** (2.3 MB, MIT licence) comes from the `silero-vad` 6.2.0 wheel on PyPI and is checked against its SHA-256. The wheel itself isn't installed because it needs torch.
 - **`models/parakeet-tdt-0.6b-v2/`** (2.5 GB, NVIDIA's CC-BY-4.0 model in the `mlx-community` conversion) is cloned from `~/.cache/huggingface` if it is already there. The clone is an APFS copy-on-write clone, so it is instant and takes no extra disk space. Otherwise it is downloaded into `models/`. Downloads never go to `~/.cache`: `HF_HOME` points to `models/hf/`.
+- **`models/speaker/wespeaker_en_voxceleb_resnet34_LM.onnx`** (26.5 MB, Apache-2.0), for the voice check only, is WeSpeaker's ResNet34-LM as converted by sherpa-onnx, checked against its SHA-256.
 - The terminal app needs microphone permission (System Settings, Privacy & Security, Microphone). Without it macOS delivers silence, and `mic-check` says so.
 
 ## Use
@@ -51,6 +54,8 @@ If Claude Code is showing a permission prompt or another dialog when you speak, 
 | `hal-listen mic-check` | Open the microphone for a few seconds and print levels and seconds of speech only. |
 | `hal-listen type TEXT` | Type TEXT into the session with the same safety checks as speech. Useful for checking the wiring. |
 | `hal-listen check` | Say whether text may be typed into the session right now, and if not, why. |
+| `hal-listen enrol` | Make your voiceprint: read 20 sentences aloud (`--count`). `--add` adds to it (from another room, say); `--file` enrols from recordings. Listening pauses meanwhile. See [Telling your voice from others](#telling-your-voice-from-others). |
+| `hal-listen voiceprint` | Show the voiceprint. `score FILE…` scores recordings against it; `report` summarises the scores logged so far, to set the threshold; `forget` deletes it. |
 
 The log is `state/listen.log`.
 
@@ -227,6 +232,20 @@ Speech heard over the voice that didn't interrupt it (too quiet or too short) is
 
 **Fallback.** If the helper is missing, won't start, exits or stops sending audio, the listener captures with the microphone as before. That is half-duplex, logged with the reason, and the helper is tried again after 1, 2, 4 … up to 15 minutes. If voice processing is unavailable for the current devices and the output isn't headphones, the listener gates as in half-duplex until the devices change. The log and `hal-listen status` say which mode is in use and why.
 
+### Telling your voice from others
+
+The name alone lets anyone in earshot address Claude, and the no-name windows (a held turn, `during_turn`, the follow-up window) let in anything said nearby. The voice check scores each utterance against your voiceprint, before it is transcribed.
+
+- **The model.** WeSpeaker ResNet34-LM, trained on VoxCeleb (Apache-2.0, 26.5 MB, `scripts/fetch-voice-model.sh` puts it in `models/speaker/`), run with onnxruntime. It turns a stretch of speech into 256 numbers; the features are Kaldi's 80 log mel energies, computed in numpy (`voiceprint.fbank`). An utterance takes about 30 ms.
+- **Enrolment.** `hal-listen enrol` shows 20 sentences, some of them requests, and keeps one embedding per sentence in `state/listen/voiceprint.json` (readable by you only; no audio is kept). Their normalised average is the voiceprint. It reports how consistent the sentences were: each against the average of the others.
+- **The score** is the cosine similarity of the utterance's embedding to the voiceprint, from about 0 (unrelated) to 1. Only the speech is scored, without the pre- and post-roll.
+- **`voice_check`**:
+  - `"log"` (the default) scores and logs each utterance (`voice 0.74 (you)` on a request's line; `voice 0.21 (another voice; not addressed; …)` for the rest) and changes nothing. Without a voiceprint nothing happens at all.
+  - `"enforce"`: speech scoring below `voice_threshold` with at least `voice_min_seconds` of speech is ignored before it is transcribed (`another voice: ignored unheard`), and doesn't end a turn or a window. Shorter speech can't be judged reliably: if it scores low it counts only if it starts with the name, and never joins a turn or a no-name window.
+  - `"off"`.
+- **Choosing the threshold.** Run in `"log"` for a few days, then `hal-listen voiceprint report`: it lists the scores of requests heard (mostly yours) and of other speech. Put `voice_threshold` between them, and switch to `"enforce"`.
+- **Measured on synthetic voices** (12 macOS voices, enrolled on 8 sentences, scored on 4 others): the same voice scored 0.82 to 0.92 on sentences of 2 s or more, and different voices 0.19 at the median. Similar voices scored much higher: Karen against Samantha 0.56 to 0.58, and voices from the same synthesiser (Eddy, Reed) up to 0.87. "Right?" and "Thanks very much." scored as low as 0.14 for the same voice. Real voices in a real room haven't been measured.
+
 ### Typing into Claude Code: the pty proxy
 
 `hal-listen pty -- claude …` (`ptyproxy.py`, standard library only) runs `claude` on a pseudo-terminal. It relays the real terminal in raw mode, byte for byte both ways, and passes on the following:
@@ -298,6 +317,7 @@ The real keyboard also counts, as seen by the proxy. A manual "No" fires no hook
 - **Addressed utterances are logged with their words.** The hook log records event names and dialog kinds, not prompts or tool inputs.
 - **Only addressed turns reach the judge.** The text sent to the front desk's Haiku is the text of a turn the listener would type into Claude Code: it started with the name (or in the armed, follow-up or `during_turn` window) and is still being held. Unaddressed speech is never sent, and the desk logs only the number of words judged. `listener.json` shows a held turn's number of fragments and verdict, never its words. With `turn_judge: false` nothing at all leaves the machine before typing.
 - **Pausing closes the microphone**, which turns off the orange indicator.
+- **The voiceprint is biometric data.** It is 256 numbers per enrolment sentence, in `state/listen/voiceprint.json` (mode 600, outside git); no audio is kept during enrolment or after. Speech ignored as another voice is never transcribed; the log gives its score and duration only. `hal-listen voiceprint forget` deletes it.
 - **A locked screen pauses listening** (`pause_when_locked`, on by default), and so does another user taking the screen. Listening resumes on unlock. The log says `paused (screen locked)` and `resumed (screen unlocked)`, and `hal-listen status` shows it. A pause you set yourself stays set across a lock.
 - **Speech over the voice** (`duplex` `"aec"`): speech that interrupts the voice and isn't a stop or resume phrase or the voice's own echo is treated as addressed, so it is typed and logged like any request. Stop phrases, echo, noise and anything heard over the voice without interrupting it (unless it has the name) are never logged with their words. The helper sends audio only to the listener, through a pipe, and writes nothing. `interrupted.json` and the `<wav>.json` sidecars hold HAL's own words, never yours.
 - **Labels, marks and the lexicon** apply only to the request being typed: nothing is computed for ignored speech, and the lexicon writes nothing. `lexicon.txt`, the folder names and the alias table are read locally and never leave the machine; only a correction made to a request (`Kolodzin [heard as "Culdran"]`) goes, as part of that request, to Claude. The turn judge gets the words as heard, uncorrected.
@@ -320,6 +340,10 @@ All optional, in a `"listener"` object in `config.json`. A missing key, or one o
 | `follow_up_seconds` | `0` | No name needed this long after a spoken reply. 0 is off. |
 | `during_turn` | `true` | No name needed while Claude is still working on a request the listener typed. |
 | `pause_when_locked` | `true` | Stop listening while the screen is locked or another user has it. |
+| `voice_check` | `"log"` | `"off"`, `"log"` (score and log each utterance) or `"enforce"` (ignore other voices). Needs a voiceprint. |
+| `voice_threshold` | `0.5` | Below this score is another voice. Set it from `hal-listen voiceprint report`. |
+| `voice_min_seconds` | `1.0` | Less speech than this can't be judged: a low score then only requires the name. |
+| `voice_model` | `models/speaker/wespeaker_en_voxceleb_resnet34_LM.onnx` | The speaker-embedding model. |
 | `stop_phrases` | `stop listening`, `pause listening`, … | |
 | `paused_reply`, `dialog_notice`, `draft_notice`, `unreachable_notice` | | What HAL says. |
 | `hold_seconds` | `120` | A held request is dropped after this. |
@@ -413,7 +437,8 @@ HAL_LISTEN_E2E=1 .venv/bin/python -m unittest tests.test_listen_e2e -v       # a
 | `test_listen_duplex.py` | Duplex `"aec"`: stop and resume phrases, the echo check, sentence positions, the barge-in detector, the listening loop over an in-memory duplex source (stop phrase, echo, noise, request, "go on", gating when cancellation is unavailable, no windows for quiet overlap), `DuplexSource` against `tests/duplex_standin.py` (voice processing on or off, headphones, a device change to AirPods, a missing, failing or dying helper, retrying), the speaker's sentence sidecars and player choice, the settings, and the Swift client's protocol against a stand-in socket (silent). |
 | `test_listen_session.py` | The state reducer for idle, busy and dialog events, keyboard handling (including the kitty keyboard protocol), the verdict, and the hook command (silent, fast, never failing). |
 | `test_listen_injector.py` | Holding, announcing, retrying, expiring, and ids. |
-| `test_listen_privacy.py` | No ignored words in any file, and no audio files. |
+| `test_listen_privacy.py` | No ignored words in any file, and no audio files. Nothing is heard while the screen is locked; another voice is ignored before it is transcribed, and a short unlike one needs the name. |
+| `test_listen_voiceprint.py` | The features (frames, mel filters, a tone in its band), the voiceprint file (private, no audio), the check and its reloading, the log report, enrolment with a stand-in microphone, and, with the model and macOS voices present, the real model telling Samantha from Daniel. |
 | `test_listen_spoken.py` | The label and marks: format, unforgeable, `plain()`, never spoken; every hook and front-desk check with and without the label (pure functions, the real hook command, the desk with its stand-in model); the lexicon (file, folders, reloading, pronunciation keys, every observed mistake, sound-alike corrections and flags, ordinary look-alike words left alone, the name's aliases only when calling); doubtful words, pauses, the interruption, each setting off; the listening loop (label time, pauses, corrections, silence mode, privacy); and, with `.venv-listen` and the model, Parakeet's confidences on synthesized clear and hard speech and `hal-listen run --file` on a synthesized recording. |
 | `test_listen_ptyproxy.py` | A scripted terminal around a stand-in program and around a real `bash`: byte-exact keys, output, resizing, exit codes and signals, Ctrl-Z and `fg`, typing exactly once, refusals, keys held during typing, one proxy at a time. |
 | `test_listen_lifecycle.py` | Autostart, status, one listener at a time, pause and resume, stop, and exiting with the session (even a killed one). |
@@ -427,7 +452,7 @@ Testing aids for the background listener: `HAL_LISTEN_FILE` makes it hear an aud
 
 - **Turns read the transcript.** The rules and the judge see Parakeet's words and punctuation, not the voice. With one synthetic voice (Samantha), Parakeet wrote a final "… my paper and" as "… my paper Anne?", a finished question, and the request went too early. A request that is finished as far as it goes ("Claude, open my thesis.") is sent after 1.2 s of silence even if you meant to go on; what you add after the acknowledgement has started is lost to the voice gate. Say "that's all" or "go ahead" if a finished request is held, and expect a minute's wait without it if the judge wrongly thinks you are mid-thought.
 - **Anyone's speech can join a turn.** While a turn is held, and while Claude works on a spoken request (`during_turn`), speech needs no name, so someone else talking in the room is typed as part of it (and judged). The same is true of the follow-up window.
-- **The listener can't tell who is speaking.** Anyone in earshot who says the name, or a video that does, is typed like you. `CLAUDE.md` therefore has Claude confirm risky spoken requests in a dialog, which only the keyboard can answer: deleting, pushing, publishing, sending, installing, changing settings. That is an instruction to the model, not a check in code.
+- **The listener can't tell who is speaking** unless you enrol and set `voice_check` to `"enforce"` (above), and even then a similar voice, or a recording of yours, may pass. Anyone in earshot who says the name, or a video that does, is otherwise typed like you. `CLAUDE.md` therefore has Claude confirm risky spoken requests in a dialog, which only the keyboard can answer: deleting, pushing, publishing, sending, installing, changing settings. That is an instruction to the model, not a check in code.
 - **Third-person mentions count.** "I asked Claude yesterday" contains the name and is typed. To require the calling position for "Claude" too, move it from `names` to `vocative_names`.
 - **Half-duplex by default.** With `duplex` `"half"` you can't interrupt HAL by voice, and anything said while HAL speaks is lost. With `"aec"` you can (above), except when it falls back: while another app captures audio, while voice processing is unavailable for the current devices, or while HAL's voice is being prepared and the helper isn't running.
 - **Interrupting is tuned on synthetic speech.** Real double-talk (you speaking over HAL through the laptop speakers) hasn't been measured, and nor have AirPods or wired headphones. A loud room or music may pause the voice, which then resumes once the words show it was nothing. A quiet voice (about −40 dBFS at the microphone) may not interrupt it. If you repeat the voice's own words back to it, that counts as echo.

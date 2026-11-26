@@ -133,6 +133,16 @@ def _build(args, cfg: dict, console, proxy: dict | None):
         except Exception as exc:  # no corrections rather than no listener
             logs.log(f"lexicon: could not load ({exc!r}); no corrections")
             console(f"lexicon: could not load ({exc!r}); no corrections")
+    voice_check = None
+    if cfg["voice_check"] != "off":
+        from . import logs, voiceprint
+
+        voice_check = voiceprint.VoiceCheck(cfg, log=logs.log)
+        if voice_check.ready():
+            if voice_check.embedder() is not None:
+                logs.log(f"voice check: {cfg['voice_check']}; threshold {cfg['voice_threshold']:g}")
+        elif not voiceprint.model_path(cfg).exists():
+            voice_check = None   # no model: nothing to check with (scripts/fetch-voice-model.sh)
     turn_judge = None
     if cfg["turn_taking"] == "semantic" and cfg["turn_judge"]:
         from . import judge
@@ -145,7 +155,8 @@ def _build(args, cfg: dict, console, proxy: dict | None):
                             dry_run=args.dry_run, show_ignored=args.show_ignored,
                             linger=getattr(args, "linger", 0.0), judge=turn_judge, lexicon=lex,
                             screen_locked=screen.locked if (cfg["pause_when_locked"] and not args.dry_run
-                                                            and not getattr(args, "file", None)) else None)
+                                                            and not getattr(args, "file", None)) else None,
+                            voice_check=voice_check)
 
 
 class _FileClock:
@@ -365,7 +376,183 @@ def _status(args) -> int:  # noqa: ARG001
         print(f"typed:    labelled [spoken HH:MM]; marks: {', '.join(marks) or 'none'}")
     else:
         print("typed:    as heard, without a label (spoken_label is false)")
+    print(f"voice:    {_voice_summary(cfg)}")
     print(f"log:      {settings.log_file()}")
+    return 0
+
+
+def _voice_summary(cfg: dict) -> str:
+    from . import voiceprint
+
+    if cfg["voice_check"] == "off":
+        return "not checked (voice_check is off)"
+    vp = voiceprint.load()
+    if vp is None:
+        return f"{cfg['voice_check']}, but no voiceprint yet (hal-listen enrol)"
+    if not voiceprint.model_path(cfg).exists():
+        return f"{cfg['voice_check']}, but the model is missing (scripts/fetch-voice-model.sh)"
+    what = {"log": "scores logged, nothing refused", "enforce": "other voices ignored"}[cfg["voice_check"]]
+    return (f"{cfg['voice_check']}: {what}; threshold {cfg['voice_threshold']:g}; "
+            f"voiceprint of {len(vp.embeddings)} sentences ({vp.updated})")
+
+
+def _enrol(args) -> int:
+    """Record you reading sentences and keep their embeddings as your voiceprint."""
+    from . import voiceprint
+    from .audio import decode_file
+
+    cfg = settings.load()
+    path = voiceprint.model_path(cfg)
+    if not path.exists():
+        print(f"hal-listen enrol: no model at {path}; run scripts/fetch-voice-model.sh", file=sys.stderr)
+        return 1
+    embed = voiceprint.Embedder(path)
+    old = voiceprint.load() if args.add else None
+    if args.add and old is None:
+        print("no voiceprint yet: enrolling afresh")
+    if args.file:
+        embeddings = []
+        for f in args.file:
+            e = embed(decode_file(f))
+            print(f"  {os.path.basename(f)}: {'ok' if e is not None else 'too short, skipped'}")
+            if e is not None:
+                embeddings.append(e)
+    else:
+        embeddings = _enrol_live(args, cfg, embed)
+        if embeddings is None:
+            return 1
+    if len(embeddings) < (1 if old is not None else args.minimum):
+        print(f"hal-listen enrol: only {len(embeddings)} usable sentence(s); nothing saved", file=sys.stderr)
+        return 1
+    vp = voiceprint.new_voiceprint(embed.name, embeddings, old)
+    saved = voiceprint.save(vp)
+    print(f"voiceprint: {len(vp.embeddings)} sentences, saved to {saved} (readable by you only; no audio kept)")
+    scores = vp.self_scores()
+    if scores:
+        import numpy as np
+
+        print(f"consistency: each sentence against the others: lowest {min(scores):.2f}, "
+              f"median {float(np.median(scores)):.2f}")
+    print(f"voice check: {_voice_summary(cfg)}")
+    return 0
+
+
+def _enrol_live(args, cfg: dict, embed) -> list | None:
+    """Show each sentence, wait for it to be read, embed it. Audio stays in memory."""
+    from . import voiceprint
+    from .audio import MicSource
+    from .segmenter import Segmenter, Utterance
+    from .vad import SileroVAD
+
+    sentences = voiceprint.SENTENCES[: max(1, args.count)]
+    flag = settings.listen_dir() / "paused"
+    paused_here = bool(_running_pid()) and not flag.exists()
+    if paused_here:
+        _pause(True)
+        time.sleep(1.2)
+    src = MicSource(args.device if args.device is not None else cfg["device"])
+    vad = SileroVAD(str(settings.project_path(cfg["vad_model"])))
+    seg = Segmenter(cfg)
+    embeddings = []
+    print(f"Read each sentence aloud in your normal voice, at your usual distance ({len(sentences)} in all).")
+    print("Ctrl-C stops without saving anything.\n")
+    try:
+        src.start()
+        for k, sentence in enumerate(sentences, 1):
+            print(f"[{k}/{len(sentences)}] {sentence}")
+            deadline = time.monotonic() + 30
+            while True:
+                if time.monotonic() > deadline:
+                    print("    nothing heard; skipped")
+                    break
+                item = src.read(0.2)
+                if item is None:
+                    continue
+                t, frame = item
+                res = seg.push(frame, vad(frame), t)
+                if not isinstance(res, Utterance) or res.audio is None:
+                    continue
+                if res.speech_seconds < 1.0:
+                    print("    too short; please read the whole sentence")
+                    continue
+                e = embed(voiceprint.speech_only(res.audio, res.start, res.speech_start, res.speech_end))
+                res.audio = None
+                if e is None:
+                    print("    couldn't use that; please read it again")
+                    continue
+                embeddings.append(e)
+                print(f"    ok ({res.speech_seconds:.1f}s)")
+                break
+    except KeyboardInterrupt:
+        print("\nstopped; nothing saved")
+        return None
+    finally:
+        src.stop()
+        if paused_here:
+            _pause(False)
+    return embeddings
+
+
+def _voiceprint(args) -> int:
+    from . import voiceprint
+    from .audio import decode_file
+
+    cfg = settings.load()
+    if args.action == "forget":
+        print("voiceprint: deleted" if voiceprint.forget() else "voiceprint: there was none")
+        return 0
+    if args.action == "report":
+        return _voice_report(cfg)
+    vp = voiceprint.load()
+    if vp is None:
+        print("voiceprint: none (hal-listen enrol makes one)")
+        return 1 if args.action == "score" else 0
+    if args.action == "score":
+        embed = voiceprint.Embedder(voiceprint.model_path(cfg))
+        for f in args.files:
+            audio = decode_file(f)
+            e = embed(audio)
+            if e is None:
+                print(f"{f}: too short")
+                continue
+            score = vp.score(e)
+            print(f"{f}: {score:.2f} ({'you' if score >= cfg['voice_threshold'] else 'another voice'})")
+        return 0
+    scores = vp.self_scores()
+    print(f"voiceprint: {len(vp.embeddings)} sentences, made {vp.created}, last added to {vp.updated}; "
+          f"model {vp.model}")
+    if scores:
+        print(f"consistency: lowest {min(scores):.2f}, median {sorted(scores)[len(scores) // 2]:.2f}")
+    print(f"voice check: {_voice_summary(cfg)}")
+    return 0
+
+
+def _voice_report(cfg: dict) -> int:
+    """The scores the listener has logged, to choose voice_threshold."""
+    from . import voiceprint
+
+    log = settings.log_file()
+    lines = []
+    for path in (log.with_name(log.name + ".1"), log):
+        with contextlib.suppress(OSError):
+            lines += path.read_text(encoding="utf-8", errors="replace").splitlines()
+    groups = voiceprint.logged_scores(lines)
+    t = cfg["voice_threshold"]
+    labels = {"addressed": "requests heard (mostly you)", "unaddressed": "speech not addressed to Claude",
+              "refused": "ignored as another voice"}
+    if not any(groups.values()):
+        print("no voice scores logged yet: with a voiceprint and voice_check \"log\", each utterance's score is logged")
+        return 0
+    for key, scores in groups.items():
+        if not scores:
+            continue
+        s = sorted(scores)
+        q = lambda f: s[min(len(s) - 1, int(f * len(s)))]  # noqa: E731
+        below = sum(x < t for x in s)
+        print(f"{labels[key]}: {len(s)}; lowest {s[0]:.2f}, 10% {q(0.1):.2f}, median {q(0.5):.2f}, "
+              f"highest {s[-1]:.2f}; {below} below the threshold {t:g}")
+    print("Requests of yours below the threshold would be refused under \"enforce\"; "
+          "set voice_threshold between your scores and other voices'.")
     return 0
 
 
@@ -532,6 +719,15 @@ def main(argv: list[str] | None = None) -> int:
     typ.add_argument("text", nargs="+")
     typ.add_argument("--no-enter", action="store_true", help="type without pressing Enter")
     sub.add_parser("check", help="may text be typed into the session now?")
+    enrol = sub.add_parser("enrol", help="record your voice reading sentences, for the voice check")
+    enrol.add_argument("--count", type=int, default=20, help="how many sentences to read (default 20)")
+    enrol.add_argument("--add", action="store_true", help="add to the voiceprint instead of replacing it")
+    enrol.add_argument("--device", help="input device (index or name substring)")
+    enrol.add_argument("--file", nargs="+", help="enrol from audio files instead of the microphone")
+    enrol.add_argument("--minimum", type=int, default=5, help=argparse.SUPPRESS)
+    vpp = sub.add_parser("voiceprint", help="show, test or delete your voiceprint")
+    vpp.add_argument("action", nargs="?", default="status", choices=["status", "score", "report", "forget"])
+    vpp.add_argument("files", nargs="*", help="with score: audio files to score against the voiceprint")
     args = parser.parse_args(argv)
 
     if getattr(args, "device", None) is not None and str(args.device).isdigit():
@@ -541,5 +737,5 @@ def main(argv: list[str] | None = None) -> int:
             args.show_ignored = sys.stdout.isatty()
         return _listen(args, background=False)
     return {"start": _start, "stop": _stop, "status": _status, "devices": _devices, "mic-check": _mic_check,
-            "type": _type, "check": _check,
+            "type": _type, "check": _check, "enrol": _enrol, "voiceprint": _voiceprint,
             "pause": lambda a: _pause(True), "resume": lambda a: _pause(False)}[args.command](args)

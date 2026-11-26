@@ -120,6 +120,8 @@ class Counts:
     corrected: int = 0           # words changed by the lexicon in what was typed (each marked)
     flagged: int = 0             # words flagged with a suggestion from the lexicon
     doubtful: int = 0            # words marked [?]
+    voice_checked: int = 0       # utterances scored against the voiceprint (voice_check)
+    other_voice: int = 0         # ... ignored as another voice (voice_check "enforce")
 
 
 def pid_alive(pid: int) -> bool:
@@ -156,12 +158,13 @@ class Listener:
                  dry_run: bool = False,
                  show_ignored: bool = False, linger: float = 0.0, write_status: bool = True,
                  judge=None, session_state=None, cue_sound=play_cue, stop_voice=stop_hal_voice, lexicon=None,
-                 screen_locked=None):
+                 screen_locked=None, voice_check=None):
         self.cfg = cfg
         self.source, self.vad, self.asr, self.gate = source, vad, asr, gate
         self.injector, self.decider, self.voice = injector, decider, voice
         self.judge = judge
         self.screen_locked = screen_locked   # callable -> True while the screen is locked (screen.locked)
+        self.voice_check = voice_check       # callable(audio, speech_seconds) -> voiceprint.Verdict | None
         self.locked = False
         self.console = console
         self.clock = clock
@@ -444,8 +447,38 @@ class Listener:
             text, words = self.asr.transcribe(audio), None
         return spoken_label.sanitize(text), words
 
+    def _check_voice(self, u: Utterance):
+        """Whose voice is this (voiceprint.py)? A Verdict, or None when not checking."""
+        if self.voice_check is None or self.cfg.get("voice_check", "off") == "off" or u.audio is None:
+            return None
+        try:
+            from .voiceprint import speech_only
+
+            verdict = self.voice_check(speech_only(u.audio, u.start, u.speech_start, u.speech_end), u.speech_seconds)
+        except Exception as exc:  # never lose a request to the check
+            logs.log(f"voice check failed ({exc!r}); this utterance is not checked")
+            return None
+        if verdict is not None:
+            self.counts.voice_checked += 1
+        return verdict
+
     def _utterance(self, u: Utterance) -> None:
         self.counts.utterances += 1
+        voice = self._check_voice(u)
+        enforce = voice is not None and self.cfg.get("voice_check") == "enforce"
+        if enforce and not voice.match and voice.reliable:
+            # Another voice: ignored before it is even transcribed, and it ends no window.
+            self.counts.other_voice += 1
+            logs.voice(voice.score, u.speech_seconds, "another voice: ignored unheard")
+            self.console(f"ignored {u.speech_seconds:.1f}s of speech in another voice (voice {voice.score:.2f})")
+            self._event("other_voice", score=round(voice.score, 3), speech=u.speech_seconds, speech_end=u.speech_end)
+            self._chain_audio, self._chain_start, self._chain_words, u.audio = [], None, [], None
+            self.decider.forget()
+            if self._voice_paused_at is not None:
+                self._resume_voice("another voice")
+            return
+        # Too short to judge, and not like you: only the name counts, as for speech heard over the voice.
+        unsure = enforce and not voice.match
         started = time.perf_counter()
         audio = u.audio
         text, asr_words = self._transcribe(audio)
@@ -470,9 +503,10 @@ class Listener:
             return
         # Heard over the voice without interrupting it: only the name counts (it may be residual echo).
         quiet_overlap = overlapped and over == "pass"
-        d = self.decider.decide(text, u, self.clock(), self.gate.reply_end, pending=pending and not quiet_overlap,
-                                during_turn=not pending and not quiet_overlap and self._during_turn(),
-                                barge_in=over == "barge", named_only=quiet_overlap)
+        named_only = quiet_overlap or unsure
+        d = self.decider.decide(text, u, self.clock(), self.gate.reply_end, pending=pending and not named_only,
+                                during_turn=not pending and not named_only and self._during_turn(),
+                                barge_in=over == "barge", named_only=named_only)
         if (over == "pass" and d.action in ("submit", "name_only", "stop_listening")
                 and self.barge is not None and self._voice_audible()):
             self._cut_voice("a request said over it")
@@ -492,6 +526,8 @@ class Listener:
             parts = heard = None   # the samples (and words) go with the decision
             self.counts.ignored += 1
             logs.ignored(d.speech_seconds, d.duration)
+            if voice is not None:
+                logs.voice(voice.score, d.speech_seconds, f"{voice.describe()}; not addressed")
             words = f': "{text}"' if self.show_ignored and text else ""
             self.console(f"ignored {d.speech_seconds:.1f}s of speech, not addressed to Claude{words}")
             self._event(d.action, speech=d.speech_seconds, asr=asr_seconds, speech_end=u.speech_end)
@@ -500,6 +536,8 @@ class Listener:
         what = f"{d.action}, {d.how}"
         if semantic and d.action == "submit":
             what = f"fragment {len(self.turns.turn.fragments) + 1 if self.turns.turn else 1} of a turn, {d.how}"
+        if voice is not None:
+            what += f", voice {voice.score:.2f} ({voice.describe()}{'; only the name counted' if unsure else ''})"
         logs.addressed(d.text, d.speech_seconds, what)
         self.console(f'heard ({d.how}): "{d.text}" -> {"fragment" if semantic and d.action == "submit" else d.action}'
                      f"  [speech-to-text {asr_seconds * 1000:.0f} ms]")

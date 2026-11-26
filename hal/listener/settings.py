@@ -95,6 +95,17 @@ DEFAULTS: dict = {
     # Stop listening while the Mac's screen is locked (or another user has it),
     # and start again when it is unlocked: nobody is at the keyboard then.
     "pause_when_locked": True,
+    # Telling your voice from others (voiceprint.py; enrol with `hal-listen
+    # enrol`). "off"; "log": score each utterance against your voiceprint and
+    # log the score, changing nothing; "enforce": ignore speech in another voice.
+    # Below voice_threshold (cosine similarity) is another voice. An utterance
+    # with less speech than voice_min_seconds can't be judged reliably: under
+    # "enforce" it still counts if it starts with the name, but it never joins
+    # a turn or a no-name window. Nothing happens without a voiceprint.
+    "voice_check": "log",
+    "voice_threshold": 0.5,
+    "voice_min_seconds": 1.0,
+    "voice_model": "models/speaker/wespeaker_en_voxceleb_resnet34_LM.onnx",
     # "Claude, stop listening" pauses; resume with `hal-listen resume`.
     "stop_phrases": ["stop listening", "pause listening", "stop listening for now", "stop listening please"],
     "paused_reply": "Very well. I will stop listening until you resume me from the keyboard.",
@@ -250,19 +261,19 @@ _FLOATS = ("armed_seconds", "name_only_grace", "follow_up_seconds", "hold_second
            "end_silence", "pre_roll", "post_roll", "min_speech", "max_utterance", "echo_tail",
            "turn_end_silence", "turn_max_wait", "turn_unclear_wait", "turn_judge_timeout", "turn_cue_after",
            "barge_in_vad", "barge_in_speech", "barge_in_within", "barge_in_echo_margin", "barge_in_echo_ratio",
-           "resume_seconds", "doubt_threshold", "pause_mark_seconds")
+           "resume_seconds", "doubt_threshold", "pause_mark_seconds", "voice_threshold", "voice_min_seconds")
 _SIGNED_FLOATS = ("barge_in_min_db",)
 _WORD_LISTS = ("names", "vocative_names", "lead_words", "name_only_words", "stop_phrases",
                "turn_send_phrases", "turn_cancel_phrases", "barge_in_stop_phrases", "barge_in_resume_phrases")
 _PATH_LISTS = ("lexicon_dirs",)
 _STRINGS = ("name_only_reply", "paused_reply", "dialog_notice", "draft_notice", "unreachable_notice",
-            "asr_model", "vad_model", "turn_cancel_reply", "turn_cue_sound", "turn_cue_words", "lexicon_file")
+            "asr_model", "vad_model", "turn_cancel_reply", "turn_cue_sound", "turn_cue_words", "lexicon_file", "voice_model")
 _BOOLS = ("autostart", "require_session_state", "turn_judge", "turn_retranscribe", "during_turn",
           "aec_agc", "aec_on_headphones", "aec_yield_to_other_input", "barge_in", "spoken_label", "lexicon",
           "doubt_marks", "pause_marks", "interruption_note", "draft_ignore_wordless",
           "pause_when_locked")
 _CHOICES = {"turn_taking": ("semantic", "silence"), "turn_cue": ("none", "sound", "words"),
-            "duplex": ("half", "aec"), "aec_ducking": ("min", "default", "mid", "max")}
+            "duplex": ("half", "aec"), "voice_check": ("off", "log", "enforce"), "aec_ducking": ("min", "default", "mid", "max")}
 
 
 def _raw_block(path: Path) -> dict:

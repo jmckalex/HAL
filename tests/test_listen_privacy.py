@@ -22,6 +22,7 @@ from hal.listener import logs, settings  # noqa: E402
 from hal.listener.audio import ArraySource  # noqa: E402
 from hal.listener.decider import Decider  # noqa: E402
 from hal.listener.service import Listener  # noqa: E402
+from hal.listener.voiceprint import Verdict  # noqa: E402
 from listen_harness import make_tmp, rmtree  # noqa: E402
 
 
@@ -102,7 +103,8 @@ class Rig:
     audio), with stand-in parts and its state in a temporary directory."""
 
     def __init__(self, audio, texts, blocked=lambda t: False, show_ignored=False, *, make_judge=None, asr=None,
-                 session_state=None, cue_sound=None, linger=0.0, screen_locked=None, **cfg_over):
+                 session_state=None, cue_sound=None, linger=0.0, screen_locked=None, voices=None,
+                 **cfg_over):
         self.tmp = make_tmp()
         self.console = []
         self._env = mock.patch.dict(os.environ, {"HAL_STATE_DIR": str(self.tmp / "state"),
@@ -115,7 +117,7 @@ class Rig:
                             decider=Decider(cfg), voice=FakeVoice(), console=self.console.append, clock=clock,
                             show_ignored=show_ignored, judge=make_judge(clock) if make_judge else None,
                             session_state=session_state, cue_sound=cue_sound, linger=linger,
-                            screen_locked=screen_locked)
+                            screen_locked=screen_locked, voice_check=voices)
 
     def close(self):
         self._env.stop()
@@ -226,6 +228,54 @@ class PrivacyTest(unittest.TestCase):
         log = (rig.tmp / "state" / "listen.log").read_text()
         self.assertIn("paused (screen locked)", log)
         self.assertIn("resumed (screen unlocked)", log)
+
+    def voices(self, *verdicts):
+        """A stand-in voice check answering with these verdicts, in order."""
+        queue = list(verdicts)
+        return lambda audio, speech_seconds: queue.pop(0) if queue else None
+
+    def test_another_voice_is_ignored_unheard(self):
+        texts = ["Claude, what's the weather tomorrow?"]
+        rig = Rig(utterances(1.5, 1.5), texts, voices=self.voices(Verdict(0.12, False, True),
+                                                                       Verdict(0.81, True, True)),
+                  voice_check="enforce")
+        self.addCleanup(rig.close)
+        rig.lst.run()
+        self.assertEqual(rig.lst.asr.calls, 1)              # the other voice was never transcribed
+        self.assertEqual(rig.lst.injector.typed, texts)
+        self.assertEqual((rig.lst.counts.voice_checked, rig.lst.counts.other_voice), (2, 1))
+        log = (rig.tmp / "state" / "listen.log").read_text()
+        self.assertIn("voice 0.12 (another voice: ignored unheard; 1.5s of speech)", log)
+        self.assertIn("voice 0.81 (you)", log)
+
+    def test_log_mode_changes_nothing(self):
+        texts = ["Claude, open my thesis.", "Claude, what's the weather tomorrow?"]
+        rig = Rig(utterances(1.5, 1.5), texts, voices=self.voices(Verdict(0.1, False, True),
+                                                                       Verdict(0.2, False, True)),
+                  voice_check="log", turn_taking="silence")
+        self.addCleanup(rig.close)
+        rig.lst.run()
+        self.assertEqual(rig.lst.injector.typed, texts)
+        self.assertIn("voice 0.10 (another voice)", (rig.tmp / "state" / "listen.log").read_text())
+
+    def test_short_and_unlike_you_needs_the_name(self):
+        texts = ["Claude, could you look at the draft of my paper and", "the second chapter."]
+        rig = Rig(utterances(2.0, 1.0), texts, voices=self.voices(Verdict(0.8, True, True),
+                                                                       Verdict(0.2, False, False)),
+                  voice_check="enforce")
+        self.addCleanup(rig.close)
+        rig.lst.run()
+        self.assertEqual(rig.lst.injector.typed, [texts[0]])   # the stranger's words didn't join the turn
+        log = (rig.tmp / "state" / "listen.log").read_text()
+        self.assertIn("voice 0.20 (unclear (too short to judge); not addressed", log)
+        self.assertNotIn("second chapter", log)
+
+    def test_no_verdict_no_change(self):
+        texts = ["Claude, open my thesis."]
+        rig = Rig(utterances(1.5), texts, voices=lambda audio, s: None, voice_check="enforce")
+        self.addCleanup(rig.close)
+        rig.lst.run()
+        self.assertEqual(rig.lst.injector.typed, texts)
 
     def test_logs_api_cannot_take_text(self):
         import inspect

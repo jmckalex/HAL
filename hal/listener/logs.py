@@ -44,5 +44,10 @@ def ignored(speech_seconds: float, total_seconds: float) -> None:
     log(f"ignored an utterance not addressed to Claude ({speech_seconds:.1f}s of speech, {total_seconds:.1f}s long)")
 
 
+def voice(score: float, speech_seconds: float, outcome: str) -> None:
+    """A voice check's score (voiceprint.py): numbers and a fixed phrase, never the words."""
+    log(f"voice {score:.2f} ({outcome}; {speech_seconds:.1f}s of speech)")
+
+
 def discarded(reason: str, seconds: float) -> None:
     log(f"discarded {seconds:.1f}s of audio ({reason})")
