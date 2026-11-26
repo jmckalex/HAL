@@ -8,6 +8,7 @@ model is told"):
     [spoken 21:14] Claude, ask Clew-boss [heard as "Clue Boss"] to add a lamprey [?] to the manual.
 
     [spoken HH:MM]                  spoken, starting at this local time
+    [spoken HH:MM; verified]        the voice check is sure it was the user
     [spoken HH:MM; by Robin]        spoken by someone else enrolled in the voice
                                     check ("by Robin?": probably; "by an
                                     unrecognised voice"; "by Robin and the user")
@@ -51,21 +52,33 @@ _ANY_MARK = re.compile(
 _QUOTE_MAX = 90
 
 
-def label(when: float | None = None, interrupted: str = "", speaker: str = "") -> str:
+def label(when: float | None = None, interrupted: str = "", speaker: str = "", verified: bool = False) -> str:
     """The label for a request spoken at `when` (time.time(); now if None). With
     `interrupted`, the sentence the voice was saying when this speech cut it off;
-    with `speaker`, who said it when it wasn't the user (the voice check)."""
+    with `speaker`, who said it when it wasn't the user (the voice check); with
+    `verified`, the voice check is sure the user said it."""
     stamp = time.strftime("%H:%M", time.localtime(time.time() if when is None else when))
     parts = [f"spoken {stamp}"]
     speaker = " ".join(str(speaker or "").replace("[", "").replace("]", "").replace(";", ",").split())
     if speaker:
         parts.append(f"by {speaker}")
+    elif verified:
+        parts.append("verified")
     if interrupted:
         parts.append(f"interrupted the voice during {quote(interrupted)}")
     return f"[{'; '.join(parts)}]"
 
 
 _SPEAKER = re.compile(r";\s*by ([^;\[\]\n]+?)\s*(?:;|\])")
+
+
+_VERIFIED = re.compile(r";\s*verified\s*(?:;|\])")
+
+
+def verified(prompt: str | None) -> bool:
+    """Does the label say the voice check is sure the user said it?"""
+    m = _LABEL_AT_START.match(prompt or "")
+    return bool(m) and bool(_VERIFIED.search(m.group(0)))
 
 
 def speaker(prompt: str | None) -> str | None:

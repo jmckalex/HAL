@@ -538,6 +538,9 @@ class Listener:
         speaker = voice.mark(enforce) if voice is not None else ""
         if answering:
             speaker = "an unrecognised voice, answering the greeting"
+        verified = (enforce and voice.match and voice.who is None and not voice.unsure and not answering
+                    and voice.score >= self.cfg.get("voice_verify_threshold", 0.7)
+                    and u.speech_seconds >= self.cfg.get("voice_verify_min_seconds", 1.5))
         started = time.perf_counter()
         audio = u.audio
         text, asr_words = self._transcribe(audio)
@@ -618,7 +621,7 @@ class Listener:
             self.counts.fragments += 1
             out = self.turns.add(d.text, how=d.how, speech_start=speech_start, speech_end=u.speech_end,
                                  speech_seconds=d.speech_seconds, duration=d.duration, audio=parts, words=heard,
-                                 interrupted=cut, speaker=speaker)
+                                 interrupted=cut, speaker=speaker, verified=verified)
             self._event("fragment", text=d.text, how=d.how, speech=d.speech_seconds, asr=asr_seconds,
                         speech_end=u.speech_end, verdict=out.turn.verdict if out.turn else "", why=out.why)
             self._turn_outcome(out)
@@ -627,7 +630,7 @@ class Listener:
                     speech_end=u.speech_end)
         if d.action == "submit":
             typed = self._typed(d.text, heard=heard or [], fragments=[(speech_start, u.speech_end)],
-                                speech_start=speech_start, interrupted=cut, speaker=speaker)
+                                speech_start=speech_start, interrupted=cut, speaker=speaker, verified=verified)
             self._submit(typed.text, u.speech_end)
         elif d.action == "name_only":
             if semantic and not pending and opens_with_name(text):
@@ -642,7 +645,7 @@ class Listener:
             self._pause()
 
     def _typed(self, text: str, *, heard: list, fragments: list, speech_start: float,
-               interrupted: Interrupted | None, speaker: str = "") -> annotate.Annotated:
+               interrupted: Interrupted | None, speaker: str = "", verified: bool = False) -> annotate.Annotated:
         """The request as it is typed: labelled and marked (annotate.py)."""
         when = time.time() - max(0.0, self.clock() - speech_start)
         sentence = ""
@@ -651,11 +654,11 @@ class Listener:
             sentence = (now if now is not None and now.play_id == interrupted.play_id else interrupted).reached
         try:
             typed = annotate.build(text, self.cfg, heard=heard, fragments=fragments, when=when,
-                                   interrupted=sentence, lex=self.lexicon, speaker=speaker)
+                                   interrupted=sentence, lex=self.lexicon, speaker=speaker, verified=verified)
         except Exception as exc:  # never lose a request to its marks
             logs.log(f"could not mark the request ({exc!r}); typing it with the label alone")
             clean = " ".join(spoken_label.sanitize(text).split())
-            typed = annotate.Annotated(f"{spoken_label.label(when, speaker=speaker)} {clean}"
+            typed = annotate.Annotated(f"{spoken_label.label(when, speaker=speaker, verified=verified)} {clean}"
                                        if self.cfg.get("spoken_label", True) else clean, clean)
         self.counts.corrected += len(typed.corrections)
         self.counts.flagged += len(typed.flags)
@@ -689,7 +692,8 @@ class Listener:
             typed = self._typed(out.text, heard=self.turns.heard_words(t),
                                 fragments=[(f.speech_start, f.speech_end) for f in t.fragments],
                                 speech_start=t.fragments[0].speech_start, interrupted=t.interrupted,
-                                speaker=combine_marks([f.speaker for f in t.fragments]))
+                                speaker=combine_marks([f.speaker for f in t.fragments]),
+                                verified=bool(t.fragments) and all(f.verified for f in t.fragments))
             logs.log(f"turn of {len(t.fragments)} fragment(s) over {span:.1f}s, {t.how}, sent ({out.why}): "
                      f"{typed.text!r}")
             self.console(f'turn sent ({out.why}): "{typed.text}"')

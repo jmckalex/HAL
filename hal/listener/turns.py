@@ -327,6 +327,7 @@ class Fragment:
     audio: list = field(default_factory=list)   # in-memory samples of its parts (for transcribing afresh)
     words: list | None = None                   # the transcriber's words, with confidences (annotate.HeardWord)
     speaker: str = ""                           # who said it, when not the user (the voice check's mark)
+    verified: bool = False                      # the voice check is sure the user said it
 
 
 @dataclass
@@ -392,11 +393,12 @@ class TurnTaker:
             self.log("turn: opened by the name alone; waiting for the request")
 
     def add(self, text: str, *, how: str, speech_start: float, speech_end: float, speech_seconds: float = 0.0,
-            duration: float = 0.0, audio=None, words=None, interrupted=None, speaker: str = "") -> Outcome:
+            duration: float = 0.0, audio=None, words=None, interrupted=None, speaker: str = "",
+            verified: bool = False) -> Outcome:
         """words: the transcriber's words for this fragment (for the marks, annotate.py);
         interrupted: where this fragment cut off the voice, if it did."""
         frag = Fragment(" ".join((text or "").split()), speech_start, speech_end, speech_seconds, duration,
-                        [a for a in (audio or []) if a is not None], words, speaker)
+                        [a for a in (audio or []) if a is not None], words, speaker, verified)
         t = self.turn
         continuing = t is not None and bool(t.fragments)
         if t is not None and not t.fragments and control(frag.text, self.cfg)[0] == "cancel":
@@ -408,7 +410,7 @@ class TurnTaker:
             if kind == "send":
                 if rest:
                     t.fragments.append(Fragment(rest, speech_start, speech_end, speech_seconds, duration,
-                                                words=words, speaker=speaker))
+                                                words=words, speaker=speaker, verified=verified))
                     t.rejoin = False
                     t.text = self._joined(t)
                 t.speech_end = speech_end
@@ -418,7 +420,7 @@ class TurnTaker:
                 self.log(f"turn: {len(t.fragments)} fragment(s) discarded; starting afresh")
                 self.turn = t = Turn(how=t.how, opened=self.clock(), speech_end=speech_end, rejoin=False)
                 frag = Fragment(rest, speech_start, speech_end, speech_seconds, duration, words=words,
-                                speaker=speaker)
+                                speaker=speaker, verified=verified)
         if t is None:
             self.turn = t = Turn(how=how, opened=self.clock(), speech_end=speech_end)
         t.interrupted = t.interrupted or interrupted

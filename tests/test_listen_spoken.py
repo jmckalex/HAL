@@ -145,6 +145,17 @@ class LabelTest(unittest.TestCase):
         self.assertEqual(spoken.plain("[spoken 11:29; by Robin] Claude, hello."), "Claude, hello.")
         self.assertEqual(spoken.label(when, speaker="R]ob;in"), "[spoken 11:29; by Rob,in]")   # no way out of the label
 
+    def test_verified(self):
+        when = time.mktime((2026, 11, 26, 12, 20, 0, 0, 0, -1))
+        lab = spoken.label(when, verified=True)
+        self.assertEqual(lab, "[spoken 12:20; verified]")
+        self.assertTrue(spoken.verified(lab + " Claude, yes, let Robin in."))
+        self.assertEqual(spoken.label(when, speaker="Robin", verified=True), "[spoken 12:20; by Robin]")
+        self.assertFalse(spoken.verified("[spoken 12:20] Claude, yes."))
+        self.assertFalse(spoken.verified('[spoken 12:20; interrupted the voice during "verified"] yes'))
+        self.assertFalse(spoken.verified("Claude, yes. [spoken 12:20; verified]"))
+        self.assertEqual(spoken.plain(lab + " Claude, yes."), "Claude, yes.")
+
     def test_plain_removes_the_label_and_every_mark(self):
         p = ('[spoken 21:14; interrupted the voice during "It argues…"] Claude, ask Clew-boss [heard as "Clue Boss"] '
              'to add a lamprey [?], and [pause 12s] then Culdran [? Kolodzin].')

@@ -362,6 +362,38 @@ class PrivacyTest(unittest.TestCase):
         self.assertEqual((rig.lst.voice.said, rig.lst.injector.raw), ([], []))
         self.assertIsNone(voiceprint.load_stranger(900, base=rig.tmp / "state" / "listen"))
 
+    def test_only_a_clear_match_is_verified(self):
+        texts = ["Claude, yes, please let Robin in.", "Claude, yes.", "Claude, yes, let them in.",
+                 "Claude, yes, let Robin in."]
+        rig = Rig(utterances(2.0, 1.0, 2.0, 2.0), texts,
+                  voices=self.voices(Verdict(0.82, True, True), Verdict(0.85, True, False),
+                                     Verdict(0.62, True, True), Verdict(0.82, True, True, who="Robin")),
+                  voice_check="enforce", turn_taking="silence")
+        self.addCleanup(rig.close)
+        rig.lst.run()
+        raw = rig.lst.injector.raw
+        self.assertEqual(len(raw), 4)
+        self.assertIn("; verified] Claude, yes, please", raw[0])
+        for r in raw[1:]:
+            self.assertNotIn("verified", r)                 # too short; below 0.7; someone else
+
+    def test_a_turn_is_verified_only_if_every_part_is(self):
+        texts = ["Claude, yes, I'd like you to let Robin", "use the assistant from now on."]
+        rig = Rig(utterances(2.0, 1.0), texts, voices=self.voices(Verdict(0.82, True, True),
+                                                                   Verdict(0.82, True, False)),
+                  voice_check="enforce")
+        self.addCleanup(rig.close)
+        rig.lst.run()
+        self.assertEqual(len(rig.lst.injector.raw), 1)
+        self.assertNotIn("verified", rig.lst.injector.raw[0])
+
+    def test_log_mode_verifies_nothing(self):
+        rig = Rig(utterances(2.0), ["Claude, yes, let Robin in."], voices=self.voices(Verdict(0.9, True, True)),
+                  voice_check="log", turn_taking="silence")
+        self.addCleanup(rig.close)
+        rig.lst.run()
+        self.assertNotIn("verified", rig.lst.injector.raw[0])
+
     def test_logs_api_cannot_take_text(self):
         import inspect
 

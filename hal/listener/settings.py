@@ -125,6 +125,12 @@ DEFAULTS: dict = {
     # whether to let them in. Their voice from that exchange is kept for
     # stranger_keep seconds for `hal-listen voiceprint admit --name NAME`.
     "greet_strangers": True,
+    # Under "enforce", a request that is clearly the owner's (no doubt with
+    # anyone else, at least voice_verify_threshold, voice_verify_min_seconds of
+    # speech in every fragment) is labelled "verified": CLAUDE.md lets a verified
+    # spoken yes admit a guest.
+    "voice_verify_threshold": 0.7,
+    "voice_verify_min_seconds": 1.5,
     "stranger_greeting": "Hello there. I'm afraid we haven't met before. May I ask your name?",
     "stranger_window": 30.0,
     "stranger_greet_every": 600.0,
@@ -290,7 +296,8 @@ _FLOATS = ("armed_seconds", "name_only_grace", "follow_up_seconds", "hold_second
            "barge_in_vad", "barge_in_speech", "barge_in_within", "barge_in_echo_margin", "barge_in_echo_ratio",
            "resume_seconds", "doubt_threshold", "pause_mark_seconds", "voice_threshold", "voice_min_seconds",
            "voice_learn_threshold", "voice_learn_min_seconds", "voice_learn_per_day", "voice_learn_max",
-           "voice_margin", "stranger_window", "stranger_greet_every", "stranger_keep")
+           "voice_margin", "stranger_window", "stranger_greet_every", "stranger_keep", "voice_verify_threshold",
+           "voice_verify_min_seconds")
 _SIGNED_FLOATS = ("barge_in_min_db",)
 _WORD_LISTS = ("names", "vocative_names", "lead_words", "name_only_words", "stop_phrases",
                "turn_send_phrases", "turn_cancel_phrases", "barge_in_stop_phrases", "barge_in_resume_phrases")
