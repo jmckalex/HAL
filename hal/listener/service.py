@@ -166,6 +166,9 @@ class Listener:
         self.judge = judge
         self.screen_locked = screen_locked   # callable -> True while the screen is locked (screen.locked)
         self.voice_check = voice_check       # callable(audio, speech_seconds) -> voiceprint.Verdict | None
+        self._last_greeting = -1e9           # when an unrecognised voice was last greeted (greet_strangers)
+        self._stranger_until: float | None = None   # its answer is awaited until then
+        self._stranger_embeddings: list = []
         self.locked = False
         self.console = console
         self.clock = clock
@@ -269,6 +272,12 @@ class Listener:
             logs.log("the Claude Code session it served has exited; stopping")
             self.console("the Claude Code session has exited; stopping")
             self._stop = True
+        if now >= getattr(self, "_next_stranger_check", 0.0):
+            self._next_stranger_check = now + 30.0
+            from . import voiceprint
+
+            if voiceprint.stranger_file().exists():
+                voiceprint.load_stranger(self.cfg.get("stranger_keep", 900.0))   # deletes it once too old
         if self.write_status and now >= self._next_status:
             self._next_status = now + 2.0
             self._status()
@@ -463,6 +472,31 @@ class Listener:
             self.counts.voice_checked += 1
         return verdict
 
+    def _greet_stranger(self, verdict, u: Utterance) -> None:
+        """An unrecognised voice said the name: say hello, and await its answer (greet_strangers)."""
+        self._last_greeting = self.clock()
+        self._stranger_until = self._last_greeting + self.cfg.get("stranger_window", 30.0)
+        self._stranger_embeddings = [verdict.embedding] if verdict.embedding is not None else []
+        if self._stranger_embeddings:
+            from . import voiceprint
+
+            voiceprint.save_stranger(self._stranger_embeddings, time.time())
+        self.counts.other_voice += 1
+        logs.voice(verdict.score, u.speech_seconds, "an unrecognised voice said the name: greeted")
+        self.console(f"greeted an unrecognised voice (voice {verdict.score:.2f})")
+        self._event("greet_stranger", score=round(verdict.score, 3), speech=u.speech_seconds, speech_end=u.speech_end)
+        self.voice(self.cfg.get("stranger_greeting") or "Hello there. I'm afraid we haven't met before.")
+
+    def _stranger_answered(self, verdict) -> None:
+        """Its answer is being typed: keep its voice for `voiceprint admit`, and close the window."""
+        self._stranger_until = None
+        if verdict.embedding is not None:
+            from . import voiceprint
+
+            self._stranger_embeddings.append(verdict.embedding)
+            voiceprint.save_stranger(self._stranger_embeddings, time.time())
+        logs.log("voice: the unrecognised voice answered the greeting; its answer is typed")
+
     def _learn_voice(self, verdict, speech_seconds: float) -> None:
         """A request clearly in your voice refines the voiceprint (voice_learn)."""
         learn = getattr(self.voice_check, "learn", None)
@@ -481,7 +515,12 @@ class Listener:
         enforce = voice is not None and self.cfg.get("voice_check") == "enforce"
         guest_ignored = (enforce and voice.match and voice.who is not None and not voice.unsure
                          and self.cfg.get("guest_requests") == "ignore")
-        if enforce and ((not voice.match and voice.reliable) or guest_ignored):
+        stranger = enforce and not voice.match and voice.reliable
+        now = self.clock()
+        answering = stranger and self._stranger_until is not None and now <= self._stranger_until
+        probing = (stranger and not answering and bool(self.cfg.get("greet_strangers"))
+                   and now - self._last_greeting >= self.cfg.get("stranger_greet_every", 600.0))
+        if enforce and ((stranger and not answering and not probing) or guest_ignored):
             # Another voice: ignored before it is even transcribed, and it ends no window.
             self.counts.other_voice += 1
             logs.voice(voice.score, u.speech_seconds,
@@ -495,8 +534,10 @@ class Listener:
                 self._resume_voice("another voice")
             return
         # Too short to judge, and not like anyone enrolled: only the name counts, as for speech heard over the voice.
-        unsure = enforce and not voice.match
+        unsure = enforce and not voice.match and not answering
         speaker = voice.mark(enforce) if voice is not None else ""
+        if answering:
+            speaker = "an unrecognised voice, answering the greeting"
         started = time.perf_counter()
         audio = u.audio
         text, asr_words = self._transcribe(audio)
@@ -523,8 +564,20 @@ class Listener:
         quiet_overlap = overlapped and over == "pass"
         named_only = quiet_overlap or unsure
         d = self.decider.decide(text, u, self.clock(), self.gate.reply_end, pending=pending and not named_only,
-                                during_turn=not pending and not named_only and self._during_turn(),
+                                during_turn=answering or (not pending and not named_only and self._during_turn()),
                                 barge_in=over == "barge", named_only=named_only)
+        if probing:
+            # An unrecognised voice: greeted if it addressed Claude, otherwise ignored; never typed.
+            self._chain_audio, self._chain_start, self._chain_words = [], None, []
+            if d.action in ("submit", "name_only"):
+                self._greet_stranger(voice, u)
+            else:
+                self.counts.ignored += 1
+                logs.ignored(d.speech_seconds, d.duration)
+                logs.voice(voice.score, d.speech_seconds, "another voice; not addressed")
+            return
+        if answering and d.action == "submit":
+            self._stranger_answered(voice)
         if (over == "pass" and d.action in ("submit", "name_only", "stop_listening")
                 and self.barge is not None and self._voice_audible()):
             self._cut_voice("a request said over it")

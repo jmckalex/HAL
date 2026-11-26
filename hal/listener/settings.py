@@ -118,6 +118,17 @@ DEFAULTS: dict = {
     # guest_requests "ignore" (with voice_check "enforce") drops their requests.
     "voice_margin": 0.05,
     "guest_requests": "type",
+    # Under "enforce": an unrecognised voice that says the name is greeted
+    # (stranger_greeting) instead of ignored, at most every stranger_greet_every
+    # seconds; what it says in the next stranger_window seconds is typed, marked
+    # "by an unrecognised voice, answering the greeting", so Claude can ask you
+    # whether to let them in. Their voice from that exchange is kept for
+    # stranger_keep seconds for `hal-listen voiceprint admit --name NAME`.
+    "greet_strangers": True,
+    "stranger_greeting": "Hello there. I'm afraid we haven't met before. May I ask your name?",
+    "stranger_window": 30.0,
+    "stranger_greet_every": 600.0,
+    "stranger_keep": 900.0,
     "voice_learn_threshold": 0.65,
     "voice_learn_min_seconds": 2.0,
     "voice_learn_per_day": 40,
@@ -279,17 +290,18 @@ _FLOATS = ("armed_seconds", "name_only_grace", "follow_up_seconds", "hold_second
            "barge_in_vad", "barge_in_speech", "barge_in_within", "barge_in_echo_margin", "barge_in_echo_ratio",
            "resume_seconds", "doubt_threshold", "pause_mark_seconds", "voice_threshold", "voice_min_seconds",
            "voice_learn_threshold", "voice_learn_min_seconds", "voice_learn_per_day", "voice_learn_max",
-           "voice_margin")
+           "voice_margin", "stranger_window", "stranger_greet_every", "stranger_keep")
 _SIGNED_FLOATS = ("barge_in_min_db",)
 _WORD_LISTS = ("names", "vocative_names", "lead_words", "name_only_words", "stop_phrases",
                "turn_send_phrases", "turn_cancel_phrases", "barge_in_stop_phrases", "barge_in_resume_phrases")
 _PATH_LISTS = ("lexicon_dirs",)
 _STRINGS = ("name_only_reply", "paused_reply", "dialog_notice", "draft_notice", "unreachable_notice",
-            "asr_model", "vad_model", "turn_cancel_reply", "turn_cue_sound", "turn_cue_words", "lexicon_file", "voice_model")
+            "asr_model", "vad_model", "turn_cancel_reply", "turn_cue_sound", "turn_cue_words", "lexicon_file", "voice_model",
+            "stranger_greeting")
 _BOOLS = ("autostart", "require_session_state", "turn_judge", "turn_retranscribe", "during_turn",
           "aec_agc", "aec_on_headphones", "aec_yield_to_other_input", "barge_in", "spoken_label", "lexicon",
           "doubt_marks", "pause_marks", "interruption_note", "draft_ignore_wordless",
-          "pause_when_locked", "voice_learn")
+          "pause_when_locked", "voice_learn", "greet_strangers")
 _CHOICES = {"turn_taking": ("semantic", "silence"), "turn_cue": ("none", "sound", "words"),
             "duplex": ("half", "aec"), "voice_check": ("off", "log", "enforce"),
             "guest_requests": ("type", "ignore"), "aec_ducking": ("min", "default", "mid", "max")}

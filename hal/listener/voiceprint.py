@@ -293,6 +293,48 @@ def enrolled_names(base: Path | None = None) -> list[str]:
     return names
 
 
+# ---------------------------------------------------------------- strangers
+
+# Under "enforce", an unrecognised voice that addresses Claude is greeted
+# (greet_strangers), and its answer is typed. The embeddings of that exchange
+# are kept in state/listen/stranger.json for stranger_keep seconds, so the user
+# can admit the person (`hal-listen voiceprint admit --name Robin`) with the
+# voice already heard; then the file is deleted. Nothing else of them is kept.
+
+def stranger_file(base: Path | None = None) -> Path:
+    return (base or settings.listen_dir()) / "stranger.json"
+
+
+def save_stranger(embeddings: list[np.ndarray], since: float, base: Path | None = None) -> Path:
+    path = stranger_file(base)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {"since": since, "embeddings": [[round(float(x), 6) for x in e] for e in embeddings]}
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+    return path
+
+
+def load_stranger(max_age: float, base: Path | None = None, now: float | None = None) -> list[np.ndarray] | None:
+    """The embeddings of the voice last greeted, unless older than max_age (then the file goes)."""
+    path = stranger_file(base)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if (time.time() if now is None else now) - float(data["since"]) > max_age:
+            path.unlink(missing_ok=True)
+            return None
+        emb = [np.asarray(e, dtype=np.float32) for e in data["embeddings"]]
+        return emb or None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def forget_stranger(base: Path | None = None) -> bool:
+    return forget(stranger_file(base))
+
+
 # ---------------------------------------------------------------- the check
 
 @dataclass

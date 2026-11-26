@@ -22,6 +22,7 @@ from hal.listener import logs, settings  # noqa: E402
 from hal.listener.audio import ArraySource  # noqa: E402
 from hal.listener.decider import Decider  # noqa: E402
 from hal.listener.service import Listener  # noqa: E402
+from hal.listener import voiceprint  # noqa: E402
 from hal.listener.voiceprint import Verdict  # noqa: E402
 from listen_harness import make_tmp, rmtree  # noqa: E402
 
@@ -238,7 +239,7 @@ class PrivacyTest(unittest.TestCase):
         texts = ["Claude, what's the weather tomorrow?"]
         rig = Rig(utterances(1.5, 1.5), texts, voices=self.voices(Verdict(0.12, False, True),
                                                                        Verdict(0.81, True, True)),
-                  voice_check="enforce")
+                  voice_check="enforce", greet_strangers=False)
         self.addCleanup(rig.close)
         rig.lst.run()
         self.assertEqual(rig.lst.asr.calls, 1)              # the other voice was never transcribed
@@ -330,6 +331,36 @@ class PrivacyTest(unittest.TestCase):
         self.assertEqual(rig.lst.injector.typed, texts)
         self.assertEqual(rig.lst.asr.calls, 1)
         self.assertIn("Robin: ignored unheard (guest_requests)", (rig.tmp / "state" / "listen.log").read_text())
+
+    def test_a_stranger_who_says_the_name_is_greeted_and_their_answer_typed(self):
+        emb = np.ones(4, np.float32) / 2
+        texts = ["Claude, could you help me with something?", "I'm Robin, a friend of the family.",
+                 "Claude, are you there?", "Nice weather today."]
+        stranger = lambda: Verdict(0.2, False, True, embedding=emb)  # noqa: E731
+        rig = Rig(utterances(2.0, 2.0, 2.0, 2.0), texts,
+                  voices=self.voices(stranger(), stranger(), stranger(), stranger()),
+                  voice_check="enforce", turn_taking="silence")
+        self.addCleanup(rig.close)
+        rig.lst.run()
+        self.assertEqual(rig.lst.voice.said, [settings.DEFAULTS["stranger_greeting"]])   # once, not again
+        self.assertEqual(len(rig.lst.injector.raw), 1)
+        self.assertRegex(rig.lst.injector.raw[0],
+                         r"^\[spoken \d\d:\d\d; by an unrecognised voice, answering the greeting\] I'm Robin")
+        kept = voiceprint.load_stranger(900, base=rig.tmp / "state" / "listen")
+        self.assertEqual(len(kept), 2)                                 # the request and the answer
+        log = (rig.tmp / "state" / "listen.log").read_text()
+        self.assertIn("an unrecognised voice said the name: greeted", log)
+        self.assertNotIn("help me with something", log)                # the stranger's request isn't kept
+        self.assertNotIn("Nice weather", log)
+
+    def test_a_stranger_who_does_not_say_the_name_is_left_alone(self):
+        texts = ["Shall I do the kitchen next?"]
+        rig = Rig(utterances(2.0), texts, voices=self.voices(Verdict(0.2, False, True, embedding=np.ones(4))),
+                  voice_check="enforce", turn_taking="silence")
+        self.addCleanup(rig.close)
+        rig.lst.run()
+        self.assertEqual((rig.lst.voice.said, rig.lst.injector.raw), ([], []))
+        self.assertIsNone(voiceprint.load_stranger(900, base=rig.tmp / "state" / "listen"))
 
     def test_logs_api_cannot_take_text(self):
         import inspect

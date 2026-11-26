@@ -117,7 +117,7 @@ def _with_speaker(text: str, speaker: str | None) -> str:
     doesn't greet them by the user's name."""
     if not speaker or not text.strip():
         return text
-    if speaker.endswith("?") or " and " in speaker or speaker == "an unrecognised voice":
+    if speaker.endswith("?") or " and " in speaker or speaker.startswith("an unrecognised voice"):
         return f"(The speaker may not be the user: address no one by name.) {text}"
     return f"(Said by {speaker}, not by the user: if you use a name, use {speaker}.) {text}"
 

@@ -550,6 +550,31 @@ def _voiceprint(args) -> int:
         return 0
     if args.action == "report":
         return _voice_report(cfg)
+    if args.action == "deny":
+        print("voiceprint: the unrecognised voice's recording is deleted" if voiceprint.forget_stranger()
+              else "voiceprint: no unrecognised voice is waiting")
+        return 0
+    if args.action == "admit":
+        if name is None:
+            print("hal-listen voiceprint admit: give the person's name with --name", file=sys.stderr)
+            return 1
+        owner = voiceprint.load()
+        if owner is None:
+            print("hal-listen voiceprint admit: enrol yourself first", file=sys.stderr)
+            return 1
+        heard = voiceprint.load_stranger(cfg["stranger_keep"])
+        if not heard:
+            print("hal-listen voiceprint admit: no unrecognised voice was greeted in the last "
+                  f"{cfg['stranger_keep'] / 60:g} minutes", file=sys.stderr)
+            return 1
+        old = voiceprint.load(vp_path)
+        vp = voiceprint.new_voiceprint(owner.model, heard, old if old is not None and old.name == name else None,
+                                       name=name)
+        voiceprint.save(vp, vp_path)
+        voiceprint.forget_stranger()
+        print(f"{name}: enrolled from {len(heard)} utterance(s) just heard; their requests will be labelled "
+              f"\"by {name}\". For a firmer voiceprint: hal-listen enrol --name {name!r} --add")
+        return 0
     vp = voiceprint.load(vp_path)
     if vp is None:
         print(f"{whose}: none (hal-listen enrol{f' --name {name!r}' if name else ''} makes one)")
@@ -778,7 +803,7 @@ def main(argv: list[str] | None = None) -> int:
     enrol.add_argument("--file", nargs="+", help="enrol from audio files instead of the microphone")
     enrol.add_argument("--minimum", type=int, default=5, help=argparse.SUPPRESS)
     vpp = sub.add_parser("voiceprint", help="show, test or delete your voiceprint")
-    vpp.add_argument("action", nargs="?", default="status", choices=["status", "score", "report", "forget", "forget-learned"])
+    vpp.add_argument("action", nargs="?", default="status", choices=["status", "score", "report", "forget", "forget-learned", "admit", "deny"])
     vpp.add_argument("files", nargs="*", help="with score: audio files to score against the voiceprints")
     vpp.add_argument("--name", help="someone enrolled by name, instead of you")
     args = parser.parse_args(argv)

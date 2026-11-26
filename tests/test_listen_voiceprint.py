@@ -260,6 +260,58 @@ class PeopleTest(unittest.TestCase):
         self.assertEqual(voiceprint.combine_marks(["Robin", "", "Sam"]), "Robin and the user and Sam")
 
 
+class AdmitTest(unittest.TestCase):
+    """`hal-listen voiceprint admit --name` and `deny`, on a temporary state directory."""
+
+    def setUp(self):
+        from unittest import mock
+
+        self.tmp = make_tmp("hal-va-")
+        self.addCleanup(rmtree, self.tmp)
+        env = mock.patch.dict(os.environ, {"HAL_STATE_DIR": str(self.tmp), "HAL_CONFIG": str(self.tmp / "c.json")})
+        env.start()
+        self.addCleanup(env.stop)
+        self.base = settings.listen_dir()
+
+    def run_cli(self, *argv):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        from hal.listener import cli
+
+        out = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(out):
+            code = cli.main(["voiceprint", *argv])
+        return code, out.getvalue()
+
+    def test_admit_enrols_the_voice_just_heard(self):
+        voiceprint.save(voiceprint.new_voiceprint("m.onnx", [unit(1, 0, 0)] * 4))
+        self.assertEqual(self.run_cli("admit", "--name", "Robin")[0], 1)          # nobody greeted yet
+        voiceprint.save_stranger([unit(0, 1, 0), unit(0, 1, 0.1)], __import__("time").time())
+        code, out = self.run_cli("admit", "--name", "Robin")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(voiceprint.enrolled_names(), ["Robin"])
+        vp = voiceprint.load(voiceprint.person_files("Robin")[0])
+        self.assertEqual((vp.name, vp.model, len(vp.embeddings)), ("Robin", "m.onnx", 2))
+        self.assertFalse(voiceprint.stranger_file().exists())
+
+    def test_deny_and_expiry(self):
+        voiceprint.save(voiceprint.new_voiceprint("m.onnx", [unit(1, 0, 0)] * 4))
+        voiceprint.save_stranger([unit(0, 1, 0)], __import__("time").time())
+        self.assertIn("deleted", self.run_cli("deny")[1])
+        self.assertFalse(voiceprint.stranger_file().exists())
+        voiceprint.save_stranger([unit(0, 1, 0)], __import__("time").time() - 2000)
+        self.assertIsNone(voiceprint.load_stranger(900))
+        self.assertFalse(voiceprint.stranger_file().exists())                     # too old: gone
+
+    def test_admit_needs_a_proper_name_and_the_owner(self):
+        voiceprint.save_stranger([unit(0, 1, 0)], __import__("time").time())
+        self.assertEqual(self.run_cli("admit", "--name", "Robin")[0], 1)          # the owner isn't enrolled
+        voiceprint.save(voiceprint.new_voiceprint("m.onnx", [unit(1, 0, 0)] * 4))
+        self.assertEqual(self.run_cli("admit", "--name", "../x")[0], 1)
+        self.assertEqual(self.run_cli("admit")[0], 1)
+
+
 class ReportTest(unittest.TestCase):
     def test_scores_from_the_log(self):
         lines = [
